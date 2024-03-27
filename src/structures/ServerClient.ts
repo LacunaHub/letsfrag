@@ -76,7 +76,7 @@ export class ServerClient extends NetIPCClient {
 
         if (response.error) throw makeError(response.error)
 
-        return (response.data as HostData[]).sort((a, b) => a.clusterList[0] - b.clusterList[0])
+        return (response.data as HostData[]).sort((a, b) => a.clusters[0] - b.clusters[0])
     }
 
     /**
@@ -128,8 +128,8 @@ export class ServerClient extends NetIPCClient {
         const message = new IPCBaseMessage({
             type: IPCMessageType.ServerClientReady,
             data: {
-                shardList: this.manager?.shardList ?? [],
-                clusterList: this.manager?.clusterList ?? []
+                shards: this.manager?.shards ?? [],
+                clusters: this.manager?.clusters ?? []
             }
         })
 
@@ -161,8 +161,8 @@ export class ServerClient extends NetIPCClient {
                 uptime: os.uptime(),
                 cpuUsage: await cpu.usage(),
                 memoryUsed: await mem.used(),
-                shardList: this.manager?.shardList ?? [],
-                clusterList: this.manager?.clusterList ?? []
+                shards: this.manager?.shards ?? [],
+                clusters: this.manager?.clusters ?? []
             }
         }
 
@@ -227,17 +227,17 @@ export type ServerClientType = 'bot' | 'unknown' | string
 export interface ServerClientConnectPayload {
     authorization?: string
     type?: ServerClientType
-    shardList?: number[]
-    clusterList?: number[]
+    shards?: number[]
+    clusters?: number[]
 }
 
 export interface ShardingData {
-    shardList: number[]
-    totalShards: number
+    shards: number[]
+    shardCount: number
 }
 
 export interface ClusteringData {
-    clusterList: number[]
+    clusters: number[]
 }
 
 export interface HostData {
@@ -245,6 +245,6 @@ export interface HostData {
     uptime: number
     cpuUsage: number
     memoryUsed: MemUsedInfo
-    shardList: number[]
-    clusterList: number[]
+    shards: number[]
+    clusters: number[]
 }

@@ -23,9 +23,9 @@ export class ClusterManager extends EventEmitter {
     public server: ServerClient
 
     /**
-     * List of clusters that this manager handles.
+     * Map of cluster instances.
      */
-    public clusters = new Map<number, Cluster>()
+    public cache = new Map<number, Cluster>()
 
     /**
      * Promise manager.
@@ -35,17 +35,17 @@ export class ClusterManager extends EventEmitter {
     /**
      * Total number of shards.
      */
-    public totalShards: number
+    public shardCount: number
 
     /**
      * List of shards that this manager handles.
      */
-    public shardList: number[] = []
+    public shards: number[] = []
 
     /**
      * List of clusters that this manager handles.
      */
-    public clusterList: number[] = []
+    public clusters: number[] = []
 
     /**
      * Spawn queue.
@@ -75,7 +75,7 @@ export class ClusterManager extends EventEmitter {
 
         this.server = new ServerClient(this, options.server)
 
-        this.options.totalClusters = +options.totalClusters || -1
+        this.options.clusterCount = +options.clusterCount || -1
         this.options.shardsPerCluster = +options.shardsPerCluster || -1
         this.options.autoRespawn = !!options.autoRespawn
         this.options.spawnDelay = +options.spawnDelay || 10_000
@@ -99,51 +99,51 @@ export class ClusterManager extends EventEmitter {
 
         const shardingData = await this.server.getShardingData()
 
-        this.totalShards = shardingData.totalShards
-        this.shardList = shardingData.shardList
-        const totalClusterShards = this.shardList.length
+        this.shardCount = shardingData.shardCount
+        this.shards = shardingData.shards
+        const clusterShardCount = this.shards.length
 
-        if (this.options.totalClusters === -1) {
+        if (this.options.clusterCount === -1) {
             const cpuCores = os.cpus().length
 
-            this.options.totalClusters = cpuCores > totalClusterShards ? totalClusterShards : cpuCores
+            this.options.clusterCount = cpuCores > clusterShardCount ? clusterShardCount : cpuCores
         }
 
         if (this.options.shardsPerCluster === -1) {
-            this.options.shardsPerCluster = Math.ceil(totalClusterShards / this.options.totalClusters)
+            this.options.shardsPerCluster = Math.ceil(clusterShardCount / this.options.clusterCount)
         }
 
-        if (this.options.totalClusters > totalClusterShards)
-            throw new Error('[ClusterManager#spawn] "totalClusters" cannot be more than "totalShards".')
-        if (this.options.shardsPerCluster > totalClusterShards)
-            throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be less than "totalShards".')
+        if (this.options.clusterCount > clusterShardCount)
+            throw new Error('[ClusterManager#spawn] "clusterCount" cannot be more than "shardCount".')
+        if (this.options.shardsPerCluster > clusterShardCount)
+            throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be less than "shardCount".')
         if (this.options.shardsPerCluster < 1)
             throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be at least 1.')
 
-        const clusteringData = await this.server.getClusteringData(this.options.totalClusters)
-        this.clusterList = clusteringData.clusterList
+        const clusteringData = await this.server.getClusteringData(this.options.clusterCount)
+        this.clusters = clusteringData.clusters
 
-        if (this.shardList.some(shard => shard < 0))
+        if (this.shards.some(shard => shard < 0))
             throw new Error('[ClusterManager#spawn] Shard identifier cannot be less than 0.')
-        if (this.clusterList.some(cluster => cluster < 0))
+        if (this.clusters.some(cluster => cluster < 0))
             throw new Error('[ClusterManager#spawn] Cluster identifier cannot be less than 0.')
 
-        const shardList = chunkArray(this.shardList, this.options.shardsPerCluster)
+        const shards = chunkArray(this.shards, this.options.shardsPerCluster)
 
-        for (const clusterId of this.clusterList) {
-            const i = this.clusterList.indexOf(clusterId)
-            const clusterShardList = shardList[i]
+        for (const clusterId of this.clusters) {
+            const i = this.clusters.indexOf(clusterId)
+            const clusterShards = shards[i]
 
-            if (!clusterShardList) continue
+            if (!clusterShards) continue
 
             this.spawnQueue.add({
-                timeout: this.options.spawnDelay * clusterShardList.length,
+                timeout: this.options.spawnDelay * clusterShards.length,
                 args: [
                     this.options.spawnTimeout !== -1
-                        ? this.options.spawnTimeout + this.options.spawnDelay * clusterShardList.length
+                        ? this.options.spawnTimeout + this.options.spawnDelay * clusterShards.length
                         : this.options.spawnTimeout
                 ],
-                run: (...timeout: number[]) => this.createCluster(clusterId, clusterShardList).spawn(...timeout)
+                run: (...timeout: number[]) => this.createCluster(clusterId, clusterShards).spawn(...timeout)
             })
         }
 
@@ -153,12 +153,12 @@ export class ClusterManager extends EventEmitter {
     /**
      * Creates a new cluster.
      * @param id ID of the cluster.
-     * @param shardList Shard list of the cluster.
+     * @param shards Shard list of the cluster.
      */
-    public createCluster(id: number, shardList: number[]): Cluster {
-        const cluster = new Cluster(this, id, shardList)
+    public createCluster(id: number, shards: number[]): Cluster {
+        const cluster = new Cluster(this, id, shards)
 
-        this.clusters.set(id, cluster)
+        this.cache.set(id, cluster)
         this.emit('clusterCreate', cluster)
 
         return cluster
@@ -177,21 +177,21 @@ export class ClusterManager extends EventEmitter {
         this.emit('debug', { from: 'ClusterManager#respawnAll', data: arguments })
 
         const promises: Promise<ChildProcess | WorkerThread | void>[] = [],
-            shardList = chunkArray(this.shardList || [], this.options.shardsPerCluster || this.totalShards)
+            shards = chunkArray(this.shards || [], this.options.shardsPerCluster || this.shardCount)
 
-        const clusters = [...this.clusters.values()]
+        const clusters = [...this.cache.values()]
 
         for (const cluster of clusters) {
             const i = clusters.indexOf(cluster),
-                length = shardList[i]?.length || this.totalShards / this.options.totalClusters
+                length = shards[i]?.length || this.shardCount / this.options.clusterCount
 
             promises.push(cluster.respawn(shardSpawnDelay, shardSpawnTimeout))
-            if (i < this.clusters.size && spawnDelay > 0) promises.push(sleep(length * spawnDelay))
+            if (i < this.cache.size && spawnDelay > 0) promises.push(sleep(length * spawnDelay))
         }
 
         await Promise.allSettled(promises)
 
-        return this.clusters
+        return this.cache
     }
 
     /**
@@ -199,7 +199,7 @@ export class ClusterManager extends EventEmitter {
      * @param message Message to broadcast.
      */
     public broadcast(message: IPCRawMessage): Promise<void[]> {
-        return Promise.all([...this.clusters.values()].map(cluster => cluster.send(message)))
+        return Promise.all([...this.cache.values()].map(cluster => cluster.send(message)))
     }
 
     /**
@@ -211,40 +211,40 @@ export class ClusterManager extends EventEmitter {
         script: string | ((manager: ClusterManager) => T),
         options: EvalOptions = {}
     ): Promise<T> {
-        if (!this.clusters.size) throw new Error('[ClusterManager#broadcastEval] No clusters found.')
+        if (!this.cache.size) throw new Error('[ClusterManager#broadcastEval] No clusters found.')
         if (typeof script !== 'function' && typeof script !== 'string')
             throw new TypeError('[ClusterManager#broadcastEval] Script must be a function.')
 
         script = typeof script === 'function' ? `(${script})(this,${JSON.stringify(options.context)})` : script
 
-        if (Array.isArray(options.cluster)) {
-            const clusterIds = options.cluster
+        if (Array.isArray(options.clusters)) {
+            const clusters = options.clusters
 
-            if (clusterIds.some(v => v < 0) || !clusterIds.every(v => this.clusters.has(v)))
+            if (clusters.some(v => v < 0) || !clusters.every(v => this.cache.has(v)))
                 throw new Error('[ClusterManager#broadcastEval] Invalid cluster ID(s).')
         }
 
-        if (Array.isArray(options.shard)) {
-            const shardIds = options.shard
+        if (Array.isArray(options.shards)) {
+            const shards = options.shards
 
-            if (shardIds.some(v => v < 0) || !shardIds.every(v => this.shardList.includes(v)))
+            if (shards.some(v => v < 0) || !shards.every(v => this.shards.includes(v)))
                 throw new Error('[ClusterManager#broadcastEval] Invalid shard ID(s).')
 
             const clusterIds = new Set<number>()
 
-            for (const cluster of this.clusters.values()) {
-                if (cluster.shardList.some(shard => shardIds.includes(shard))) clusterIds.add(cluster.id)
+            for (const cluster of this.cache.values()) {
+                if (cluster.shards.some(shard => shards.includes(shard))) clusterIds.add(cluster.id)
             }
 
             if (!clusterIds.size) throw new Error('[ClusterManager#broadcastEval] No clusters found for shard ID(s).')
 
-            options.cluster = Array.from(clusterIds)
+            options.clusters = Array.from(clusterIds)
         }
 
         const promises: Promise<any>[] = []
 
-        if (Array.isArray(options.cluster)) {
-            const clusters = [...this.clusters.values()].filter(v => (options.cluster as number[]).includes(v.id))
+        if (Array.isArray(options.clusters)) {
+            const clusters = [...this.cache.values()].filter(v => (options.clusters as number[]).includes(v.id))
 
             if (!clusters.length) throw new Error('[ClusterManager#broadcastEval] No clusters found for cluster ID(s).')
 
@@ -252,7 +252,7 @@ export class ClusterManager extends EventEmitter {
                 promises.push(cluster.evalOnShard(script, options))
             }
         } else {
-            for (const cluster of this.clusters.values()) {
+            for (const cluster of this.cache.values()) {
                 promises.push(cluster.evalOnShard(script, options))
             }
         }
@@ -338,7 +338,7 @@ export interface ClusterManagerOptions<T extends ClusterManagerMode> {
     /**
      * Total number of clusters.
      */
-    totalClusters?: number
+    clusterCount?: number
 
     /**
      * Number of shards per cluster.
@@ -380,7 +380,7 @@ export interface ClusterManagerOptions<T extends ClusterManagerMode> {
      */
     queueTimeout?: number
 
-    clusterOptions?: T extends 'fork' ? ForkOptions : WorkerOptions
+    cluster?: T extends 'fork' ? ForkOptions : WorkerOptions
 }
 
 export type ClusterManagerMode = 'fork' | 'thread'
@@ -395,12 +395,12 @@ export interface EvalOptions<T extends object = object> {
     /**
      * Cluster IDs to evaluate.
      */
-    cluster?: number[]
+    clusters?: number[]
 
     /**
      * Shard IDs to evaluate.
      */
-    shard?: number[]
+    shards?: number[]
 
     context?: T
 
