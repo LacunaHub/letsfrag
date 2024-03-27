@@ -162,7 +162,7 @@ export class Server extends NetIPCServer {
                 occupiedClusters = botClients.filter(v => v.clusters.length).flatMap(v => v.clusters)
             const clusters = []
 
-            for (let clusterId of [...Array(message.data.totalClusters).keys()]) {
+            for (let clusterId of [...Array(message.data.clusterCount).keys()]) {
                 while (occupiedClusters.includes(clusterId) || clusters.includes(clusterId)) {
                     clusterId++
                 }
