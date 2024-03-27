@@ -239,7 +239,7 @@ export class ClusterShard<Client extends DJSClient = DJSClient> extends EventEmi
             const env = process.env as NodeJS.ProcessEnv & ClusterEnv<'fork'>,
                 shards: number[] = []
 
-            for (const v of env?.LF_SHARD_LIST?.split(',') || []) {
+            for (const v of env?.LF_SHARDS?.split(',') || []) {
                 if (isNaN(+v)) continue
                 shards.push(+v)
             }

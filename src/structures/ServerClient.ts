@@ -48,11 +48,11 @@ export class ServerClient extends NetIPCClient {
         return response.data as ShardingData
     }
 
-    public async getClusteringData(totalClusters: number, timeout: number = 30_000): Promise<ClusteringData> {
+    public async getClusteringData(clusterCount: number, timeout: number = 30_000): Promise<ClusteringData> {
         const message = new IPCBaseMessage({
             type: IPCMessageType.ServerClientClusterList,
             data: {
-                totalClusters
+                clusterCount
             }
         })
 
