@@ -12,8 +12,8 @@ export class ClusterShardClient extends DJSClient {
 
         super({
             ...options,
-            shardCount: info.totalShards,
-            shards: info.shardList
+            shardCount: info.shardCount,
+            shards: info.shards
         })
 
         this.cluster = new ClusterShard(this)

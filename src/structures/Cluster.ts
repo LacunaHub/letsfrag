@@ -31,19 +31,18 @@ export class Cluster extends EventEmitter {
 
     private env: NodeJS.ProcessEnv & ClusterEnv
 
-    constructor(public readonly manager: ClusterManager, public id: number, public shardList: number[]) {
+    constructor(public readonly manager: ClusterManager, public id: number, public shards: number[]) {
         if (!manager) throw new Error(`[Cluster] "manager" is required.`)
         if (typeof id !== 'number') throw new Error(`[Cluster] "id" must be a number.`)
-        if (!Array.isArray(shardList)) throw new Error(`[Cluster] "shardList" must be an array.`)
+        if (!Array.isArray(shards)) throw new Error(`[Cluster] "shards" must be an array.`)
 
         super()
 
         this.env = Object.assign({}, process.env, {
             LF_CLUSTER_ID: this.id,
             LF_CLUSTER_MANAGER_MODE: this.manager.options.mode,
-            LF_TOTAL_SHARDS: this.manager.totalShards,
-            LF_TOTAL_CLUSTERS: this.manager.options.totalClusters,
-            LF_SHARD_LIST: this.shardList
+            LF_SHARD_COUNT: this.manager.shardCount,
+            LF_SHARDS: this.shards
         })
     }
 
@@ -58,10 +57,10 @@ export class Cluster extends EventEmitter {
         const args = [
                 ...(this.manager.options.shardArgs || []),
                 `--clusterId ${this.id}`,
-                `--shards [${this.shardList.join(', ').trim()}]`
+                `--shards [${this.shards.join(', ').trim()}]`
             ],
             options = {
-                ...this.manager.options.clusterOptions,
+                ...this.manager.options.cluster,
                 execArgv: this.manager.options.execArgv,
                 env: this.env
             }
@@ -272,7 +271,6 @@ export interface ClusterEvents {
 export interface ClusterEnv<T extends ClusterManagerMode = 'thread'> {
     LF_CLUSTER_ID: T extends 'fork' ? string : number
     LF_CLUSTER_MANAGER_MODE: ClusterManagerMode
-    LF_TOTAL_SHARDS: T extends 'fork' ? string : number
-    LF_TOTAL_CLUSTERS: T extends 'fork' ? string : number
-    LF_SHARD_LIST: T extends 'fork' ? string : number[]
+    LF_SHARD_COUNT: T extends 'fork' ? string : number
+    LF_SHARDS: T extends 'fork' ? string : number[]
 }

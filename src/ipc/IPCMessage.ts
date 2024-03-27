@@ -174,6 +174,9 @@ export enum IPCMessageType {
     'ServerClientHostsResponse',
     'ServerClientShardList',
     'ServerClientShardListResponse',
+    'ServerClientClusterList',
+    'ServerClientClusterListResponse',
+    'ServerClientReady',
     'CustomMessage',
     'CustomReply',
     'CustomRequest'

@@ -12,12 +12,12 @@ export class Server extends NetIPCServer {
 
     constructor(public options: ServerOptions) {
         if (!options.authorization) throw new TypeError('[Server] "authorization" is required.')
-        if (typeof options.totalHosts !== 'number' || options.totalHosts < 1)
-            throw new TypeError('[Server] "totalHosts" must be a number and greater than 0.')
+        if (typeof options.hostCount !== 'number' || options.hostCount < 1)
+            throw new TypeError('[Server] "hostCount" must be a number and greater than 0.')
 
         super(options)
 
-        this.options.totalShards = +options.totalShards || -1
+        this.options.shardCount = +options.shardCount || -1
         this.options.shardsPerHost = +options.shardsPerHost || -1
         this.options.botToken = options.botToken || null
 
@@ -35,25 +35,25 @@ export class Server extends NetIPCServer {
      * @returns
      */
     public async initialize(): Promise<this> {
-        if (this.options.totalShards === -1) {
-            if (!this.options.botToken) throw new Error('[Server] "botToken" is required when "totalShards" is -1.')
+        if (this.options.shardCount === -1) {
+            if (!this.options.botToken) throw new Error('[Server] "botToken" is required when "shardCount" is -1.')
 
             try {
-                this.options.totalShards = await fetchRecommendedShardCount(this.options.botToken)
+                this.options.shardCount = await fetchRecommendedShardCount(this.options.botToken)
             } catch (err) {
                 throw new Error('[Server] Failed to fetch recommended shard count.')
             }
         }
 
-        if (this.options.totalHosts > this.options.totalShards)
-            throw new Error('[Server] "totalHosts" cannot be more than "totalShards".')
+        if (this.options.hostCount > this.options.shardCount)
+            throw new Error('[Server] "hostCount" cannot be more than "shardCount".')
 
         if (this.options.shardsPerHost === -1) {
-            this.options.shardsPerHost = Math.floor(this.options.totalShards / this.options.totalHosts)
+            this.options.shardsPerHost = Math.ceil(this.options.shardCount / this.options.hostCount)
         }
 
-        if (this.options.shardsPerHost > this.options.totalShards)
-            throw new Error('[Server] "shardsPerHost" must be less than "totalShards".')
+        if (this.options.shardsPerHost > this.options.shardCount)
+            throw new Error('[Server] "shardsPerHost" must be less than "shardCount".')
 
         return await this.start()
     }
@@ -71,10 +71,9 @@ export class Server extends NetIPCServer {
         const clientConnection: ServerClientConnection = Object.assign(connection, {
             authorization: payload.authorization,
             type: payload.type,
-            shardList: []
+            shards: payload.shards ?? [],
+            clusters: payload.clusters ?? []
         })
-
-        this.clients.set(connection.id, clientConnection)
 
         return !!this.clients.set(connection.id, clientConnection)
     }
@@ -85,9 +84,7 @@ export class Server extends NetIPCServer {
         const clientConnection = this.clients.get(connection.id)
 
         if (!clientConnection) return false
-        if (clientConnection.type !== 'bot' || !clientConnection.shardList) return this.clients.delete(connection.id)
-
-        this.clients.delete(connection.id)
+        if (clientConnection.type !== 'bot' || !clientConnection.shards) return this.clients.delete(connection.id)
 
         return this.clients.delete(connection.id)
     }
@@ -104,6 +101,14 @@ export class Server extends NetIPCServer {
         const clientConnection = this.clients.get(connection.id)
 
         if (!clientConnection) return false
+
+        if (message.type === IPCMessageType.ServerClientReady) {
+            const { shards, clusters } = message.data
+
+            if (Array.isArray(shards) && shards.every(v => typeof v === 'number')) clientConnection.shards = shards
+            if (Array.isArray(clusters) && clusters.every(v => typeof v === 'number'))
+                clientConnection.clusters = clusters
+        }
 
         const ipcMessage = new NetIPCMessage(clientConnection, message)
         return this.emit('clientMessage', clientConnection, ipcMessage)
@@ -126,7 +131,7 @@ export class Server extends NetIPCServer {
         const response = new IPCBaseMessage()
 
         if (!clientConnection) {
-            response.data.error = 'Unknown connection'
+            response.error = makePlainError(new Error('Unknown connection'))
             await respond(response)
 
             return false
@@ -134,23 +139,41 @@ export class Server extends NetIPCServer {
 
         if (message.type === IPCMessageType.ServerClientShardList) {
             const botClients = [...this.clients.values()].filter(v => v.type === 'bot'),
-                startedBotCount = botClients.filter(v => v.shardList.length).length,
-                startedShardCount = startedBotCount * this.options.shardsPerHost
-            const totalShardList = [...Array(this.options.totalShards).keys()],
-                shardList = totalShardList.slice(startedShardCount, startedShardCount + this.options.shardsPerHost)
+                occupiedShardCount = botClients.filter(v => v.shards.length).length * this.options.shardsPerHost
+            const shards = [...Array(this.options.shardCount).keys()].slice(
+                occupiedShardCount,
+                occupiedShardCount + this.options.shardsPerHost
+            )
 
-            if (!shardList.length) {
-                response.data.error = 'All shards are already started'
+            if (!shards.length) {
+                response.error = makePlainError(new Error('All shards are already started'))
                 await respond(response)
 
                 return false
             }
 
-            clientConnection.shardList = shardList
+            clientConnection.shards = shards
 
             response.type = IPCMessageType.ServerClientShardListResponse
-            response.data.shardList = shardList
-            response.data.totalShards = shardList.length
+            response.data.shards = shards
+            response.data.shardCount = this.options.shardCount
+        } else if (message.type === IPCMessageType.ServerClientClusterList) {
+            const botClients = [...this.clients.values()].filter(v => v.type === 'bot'),
+                occupiedClusters = botClients.filter(v => v.clusters.length).flatMap(v => v.clusters)
+            const clusters = []
+
+            for (let clusterId of [...Array(message.data.totalClusters).keys()]) {
+                while (occupiedClusters.includes(clusterId) || clusters.includes(clusterId)) {
+                    clusterId++
+                }
+
+                clusters.push(clusterId)
+            }
+
+            clientConnection.clusters = clusters
+
+            response.type = IPCMessageType.ServerClientClusterListResponse
+            response.data.clusters = clusters
         } else if (message.type === IPCMessageType.ServerClientBroadcast) {
             const promises = []
             const request = new IPCBaseMessage({ ...message, type: IPCMessageType.ServerBroadcast })
@@ -174,7 +197,7 @@ export class Server extends NetIPCServer {
             const request = new IPCBaseMessage({ ...message, type: IPCMessageType.ServerHostData })
 
             for (const client of this.clients.values()) {
-                if (client.type === 'bot') continue
+                if (client.type !== 'bot') continue
 
                 promises.push(client.request(request.toJSON(), message.data.timeout))
             }
@@ -230,12 +253,12 @@ export interface ServerOptions extends NetIPCServerOptions {
     /**
      * Total number of hosts.
      */
-    totalHosts: number
+    hostCount: number
 
     /**
      * Total number of shards on all hosts.
      */
-    totalShards?: number
+    shardCount?: number
 
     /**
      * Number of shards per host.
@@ -251,5 +274,6 @@ export interface ServerOptions extends NetIPCServerOptions {
 export interface ServerClientConnection extends Connection {
     authorization: string
     type: ServerClientType
-    shardList: number[]
+    shards: number[]
+    clusters: number[]
 }

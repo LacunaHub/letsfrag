@@ -62,7 +62,7 @@ export class IPCHandler<T extends Cluster | ClusterShard> {
                 this.instance.readyAt = Date.now()
                 this.instance.emit('ready', this.instance)
 
-                if (this.instance.manager.clusters.size === this.instance.manager.options.totalClusters) {
+                if (this.instance.manager.cache.size === this.instance.manager.options.clusterCount) {
                     this.instance.manager.readyAt = Date.now()
                     this.instance.manager.emit('ready', this.instance.manager)
                 }

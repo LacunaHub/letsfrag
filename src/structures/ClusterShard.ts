@@ -146,8 +146,8 @@ export class ClusterShard<Client extends DJSClient = DJSClient> extends EventEmi
      * @param prop Property to fetch.
      * @param clusterIds Cluster IDs to fetch.
      */
-    public fetchClientValues<T = any>(prop: string, clusterIds?: number[]): Promise<T> {
-        return this.broadcastEval<T>(`this.${prop}`, { cluster: clusterIds })
+    public fetchClientValues<T = any>(prop: string, clusters?: number[]): Promise<T> {
+        return this.broadcastEval<T>(`this.${prop}`, { clusters })
     }
 
     /**
@@ -237,34 +237,32 @@ export class ClusterShard<Client extends DJSClient = DJSClient> extends EventEmi
 
         if (mode === 'fork') {
             const env = process.env as NodeJS.ProcessEnv & ClusterEnv<'fork'>,
-                shardList: number[] = []
+                shards: number[] = []
 
             for (const v of env?.LF_SHARD_LIST?.split(',') || []) {
                 if (isNaN(+v)) continue
-                shardList.push(+v)
+                shards.push(+v)
             }
 
             data = {
                 clusterId: +env.LF_CLUSTER_ID,
                 clusterManagerMode: env.LF_CLUSTER_MANAGER_MODE,
-                totalShards: +env.LF_TOTAL_SHARDS,
-                totalClusters: +env.LF_TOTAL_CLUSTERS,
-                shardList: shardList,
-                firstShardId: shardList.at(0),
-                lastShardId: shardList.at(-1)
+                shardCount: +env.LF_SHARD_COUNT,
+                shards: shards,
+                firstShardId: shards.at(0),
+                lastShardId: shards.at(-1)
             }
         } else {
             const env = workerData as ClusterEnv<'thread'>,
-                shardList = env.LF_SHARD_LIST
+                shards = env.LF_SHARDS
 
             data = {
                 clusterId: env.LF_CLUSTER_ID,
                 clusterManagerMode: env.LF_CLUSTER_MANAGER_MODE,
-                totalShards: env.LF_TOTAL_SHARDS,
-                totalClusters: env.LF_TOTAL_CLUSTERS,
-                shardList: shardList,
-                firstShardId: shardList.at(0),
-                lastShardId: shardList.at(-1)
+                shardCount: env.LF_SHARD_COUNT,
+                shards: shards,
+                firstShardId: shards.at(0),
+                lastShardId: shards.at(-1)
             }
         }
 
@@ -335,17 +333,12 @@ export interface ShardInfo {
     /**
      * Total number of shards.
      */
-    totalShards: number
-
-    /**
-     * Total number of clusters.
-     */
-    totalClusters: number
+    shardCount: number
 
     /**
      * Shard list.
      */
-    shardList: number[]
+    shards: number[]
 
     /**
      * First shard ID.
