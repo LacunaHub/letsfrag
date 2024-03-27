@@ -6,7 +6,7 @@ import path from 'path'
 import { WorkerOptions, Worker as WorkerThread } from 'worker_threads'
 import { IPCMessage, IPCRawMessage } from '../ipc/IPCMessage'
 import { Cluster } from '../structures/Cluster'
-import { ServerClient } from '../structures/ServerClient'
+import { ServerClient, ServerClientOptions } from '../structures/ServerClient'
 import { SpawnQueue } from '../structures/SpawnQueue'
 import { chunkArray, sleep } from '../utils/Utils'
 import { PromiseManager } from './PromiseManager'
@@ -66,21 +66,14 @@ export class ClusterManager extends EventEmitter {
         this.file = path.isAbsolute(file) ? file : path.resolve(process.cwd(), file)
 
         if (!fs.statSync(this.file).isFile()) throw new TypeError(`[ClusterManager] "${this.file}" is not a file.`)
-        if (!options.serverHostname) throw new TypeError('[ClusterManager] "serverHostname" is required.')
-        if (typeof options.serverPort !== 'number')
-            throw new TypeError('[ClusterManager] "serverPort" must be a number.')
-        if (!options.serverAuthorization) throw new TypeError('[ClusterManager] "serverAuthorization" is required.')
+        if (!options.server?.host) throw new TypeError('[ClusterManager] "server.host" is required.')
+        if (typeof options.server?.port !== 'number')
+            throw new TypeError('[ClusterManager] "server.port" must be a number.')
+        if (!options.server.authorization) throw new TypeError('[ClusterManager] "server.authorization" is required.')
         if (!['fork', 'thread'].includes(options.mode))
             throw new TypeError('[ClusterManager] "mode" must be "fork" or "thread".')
 
-        this.server = new ServerClient(this, {
-            host: options.serverHostname,
-            port: +options.serverPort,
-            authorization: options.serverAuthorization,
-            type: 'bot',
-            reconnect: true,
-            retries: 100
-        })
+        this.server = new ServerClient(this, options.server)
 
         this.options.totalClusters = +options.totalClusters || -1
         this.options.shardsPerCluster = +options.shardsPerCluster || -1
@@ -333,19 +326,9 @@ export interface DebugMessage {
 
 export interface ClusterManagerOptions<T extends ClusterManagerMode> {
     /**
-     * Hostname of the server.
+     * Server options.
      */
-    serverHostname: string
-
-    /**
-     * Port of the server.
-     */
-    serverPort: number
-
-    /**
-     * Authorization token of the server.
-     */
-    serverAuthorization: string
+    server: ServerClientOptions
 
     /**
      * Mode of the cluster manager.
