@@ -49,7 +49,7 @@ export class Server extends NetIPCServer {
             throw new Error('[Server] "totalHosts" cannot be more than "totalShards".')
 
         if (this.options.shardsPerHost === -1) {
-            this.options.shardsPerHost = Math.floor(this.options.totalShards / this.options.totalHosts)
+            this.options.shardsPerHost = Math.ceil(this.options.totalShards / this.options.totalHosts)
         }
 
         if (this.options.shardsPerHost > this.options.totalShards)
@@ -71,10 +71,9 @@ export class Server extends NetIPCServer {
         const clientConnection: ServerClientConnection = Object.assign(connection, {
             authorization: payload.authorization,
             type: payload.type,
-            shardList: []
+            shardList: payload.shardList ?? [],
+            clusterList: payload.clusterList ?? []
         })
-
-        this.clients.set(connection.id, clientConnection)
 
         return !!this.clients.set(connection.id, clientConnection)
     }
@@ -86,8 +85,6 @@ export class Server extends NetIPCServer {
 
         if (!clientConnection) return false
         if (clientConnection.type !== 'bot' || !clientConnection.shardList) return this.clients.delete(connection.id)
-
-        this.clients.delete(connection.id)
 
         return this.clients.delete(connection.id)
     }
@@ -104,6 +101,15 @@ export class Server extends NetIPCServer {
         const clientConnection = this.clients.get(connection.id)
 
         if (!clientConnection) return false
+
+        if (message.type === IPCMessageType.ServerClientReady) {
+            const { shardList, clusterList } = message.data
+
+            if (Array.isArray(shardList) && shardList.every(v => typeof v === 'number'))
+                clientConnection.shardList = shardList
+            if (Array.isArray(clusterList) && clusterList.every(v => typeof v === 'number'))
+                clientConnection.clusterList = clusterList
+        }
 
         const ipcMessage = new NetIPCMessage(clientConnection, message)
         return this.emit('clientMessage', clientConnection, ipcMessage)
@@ -134,13 +140,12 @@ export class Server extends NetIPCServer {
 
         if (message.type === IPCMessageType.ServerClientShardList) {
             const botClients = [...this.clients.values()].filter(v => v.type === 'bot'),
-                startedBotCount = botClients.filter(v => v.shardList.length).length,
-                startedShardCount = startedBotCount * this.options.shardsPerHost
+                occupiedShardCount = botClients.filter(v => v.shardList.length).length * this.options.shardsPerHost
             const totalShardList = [...Array(this.options.totalShards).keys()],
-                shardList = totalShardList.slice(startedShardCount, startedShardCount + this.options.shardsPerHost)
+                shardList = totalShardList.slice(occupiedShardCount, occupiedShardCount + this.options.shardsPerHost)
 
             if (!shardList.length) {
-                response.data.error = 'All shards are already started'
+                response.error = makePlainError(new Error('All shards are already started'))
                 await respond(response)
 
                 return false
@@ -150,7 +155,24 @@ export class Server extends NetIPCServer {
 
             response.type = IPCMessageType.ServerClientShardListResponse
             response.data.shardList = shardList
-            response.data.totalShards = shardList.length
+            response.data.totalShards = this.options.totalShards
+        } else if (message.type === IPCMessageType.ServerClientClusterList) {
+            const botClients = [...this.clients.values()].filter(v => v.type === 'bot'),
+                occupiedClusters = botClients.filter(v => v.clusterList.length).flatMap(v => v.clusterList)
+            const clusterList = []
+
+            for (let clusterId of [...Array(message.data.totalClusters).keys()]) {
+                while (occupiedClusters.includes(clusterId) || clusterList.includes(clusterId)) {
+                    clusterId++
+                }
+
+                clusterList.push(clusterId)
+            }
+
+            clientConnection.clusterList = clusterList
+
+            response.type = IPCMessageType.ServerClientClusterListResponse
+            response.data.clusterList = clusterList
         } else if (message.type === IPCMessageType.ServerClientBroadcast) {
             const promises = []
             const request = new IPCBaseMessage({ ...message, type: IPCMessageType.ServerBroadcast })
@@ -174,7 +196,7 @@ export class Server extends NetIPCServer {
             const request = new IPCBaseMessage({ ...message, type: IPCMessageType.ServerHostData })
 
             for (const client of this.clients.values()) {
-                if (client.type === 'bot') continue
+                if (client.type !== 'bot') continue
 
                 promises.push(client.request(request.toJSON(), message.data.timeout))
             }
@@ -252,4 +274,5 @@ export interface ServerClientConnection extends Connection {
     authorization: string
     type: ServerClientType
     shardList: number[]
+    clusterList: number[]
 }

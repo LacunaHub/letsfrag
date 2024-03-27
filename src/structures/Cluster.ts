@@ -42,7 +42,6 @@ export class Cluster extends EventEmitter {
             LF_CLUSTER_ID: this.id,
             LF_CLUSTER_MANAGER_MODE: this.manager.options.mode,
             LF_TOTAL_SHARDS: this.manager.totalShards,
-            LF_TOTAL_CLUSTERS: this.manager.options.totalClusters,
             LF_SHARD_LIST: this.shardList
         })
     }
@@ -273,6 +272,5 @@ export interface ClusterEnv<T extends ClusterManagerMode = 'thread'> {
     LF_CLUSTER_ID: T extends 'fork' ? string : number
     LF_CLUSTER_MANAGER_MODE: ClusterManagerMode
     LF_TOTAL_SHARDS: T extends 'fork' ? string : number
-    LF_TOTAL_CLUSTERS: T extends 'fork' ? string : number
     LF_SHARD_LIST: T extends 'fork' ? string : number[]
 }

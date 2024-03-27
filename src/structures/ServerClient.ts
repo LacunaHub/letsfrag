@@ -41,11 +41,26 @@ export class ServerClient extends NetIPCClient {
             type: IPCMessageType.ServerClientShardList
         })
 
-        const response: IPCRawMessage = await this.request(message, timeout)
+        const response: IPCRawMessage = await this.request(message.toJSON(), timeout)
 
         if (response.error) throw makeError(response.error)
 
         return response.data as ShardingData
+    }
+
+    public async getClusteringData(totalClusters: number, timeout: number = 30_000): Promise<ClusteringData> {
+        const message = new IPCBaseMessage({
+            type: IPCMessageType.ServerClientClusterList,
+            data: {
+                totalClusters
+            }
+        })
+
+        const response: IPCRawMessage = await this.request(message.toJSON(), timeout)
+
+        if (response.error) throw makeError(response.error)
+
+        return response.data as ClusteringData
     }
 
     /**
@@ -57,11 +72,11 @@ export class ServerClient extends NetIPCClient {
             type: IPCMessageType.ServerClientHosts
         })
 
-        const response: IPCRawMessage = await this.request(message, timeout)
+        const response: IPCRawMessage = await this.request(message.toJSON(), timeout)
 
         if (response.error) throw makeError(response.error)
 
-        return response.data as HostData[]
+        return (response.data as HostData[]).sort((a, b) => a.clusterList[0] - b.clusterList[0])
     }
 
     /**
@@ -107,8 +122,18 @@ export class ServerClient extends NetIPCClient {
         return this.emit('serverMessage', ipcMessage)
     }
 
-    private async onReady(data: ClientReadyEvent): Promise<boolean> {
-        return this.emit('debug', { from: 'ServerClient#onReady', data: arguments })
+    private async onReady(data: ClientReadyEvent): Promise<void> {
+        this.emit('debug', { from: 'ServerClient#onReady', data: arguments })
+
+        const message = new IPCBaseMessage({
+            type: IPCMessageType.ServerClientReady,
+            data: {
+                shardList: this.manager?.shardList ?? [],
+                clusterList: this.manager?.clusterList ?? []
+            }
+        })
+
+        return await this.send(message)
     }
 
     private async onRequest(message: IPCRawMessage, respond: NetIPCMessageRespond): Promise<boolean> {
@@ -202,11 +227,17 @@ export type ServerClientType = 'bot' | 'unknown' | string
 export interface ServerClientConnectPayload {
     authorization?: string
     type?: ServerClientType
+    shardList?: number[]
+    clusterList?: number[]
 }
 
 export interface ShardingData {
     shardList: number[]
     totalShards: number
+}
+
+export interface ClusteringData {
+    clusterList: number[]
 }
 
 export interface HostData {

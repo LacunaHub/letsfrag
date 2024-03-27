@@ -248,7 +248,6 @@ export class ClusterShard<Client extends DJSClient = DJSClient> extends EventEmi
                 clusterId: +env.LF_CLUSTER_ID,
                 clusterManagerMode: env.LF_CLUSTER_MANAGER_MODE,
                 totalShards: +env.LF_TOTAL_SHARDS,
-                totalClusters: +env.LF_TOTAL_CLUSTERS,
                 shardList: shardList,
                 firstShardId: shardList.at(0),
                 lastShardId: shardList.at(-1)
@@ -261,7 +260,6 @@ export class ClusterShard<Client extends DJSClient = DJSClient> extends EventEmi
                 clusterId: env.LF_CLUSTER_ID,
                 clusterManagerMode: env.LF_CLUSTER_MANAGER_MODE,
                 totalShards: env.LF_TOTAL_SHARDS,
-                totalClusters: env.LF_TOTAL_CLUSTERS,
                 shardList: shardList,
                 firstShardId: shardList.at(0),
                 lastShardId: shardList.at(-1)
@@ -336,11 +334,6 @@ export interface ShardInfo {
      * Total number of shards.
      */
     totalShards: number
-
-    /**
-     * Total number of clusters.
-     */
-    totalClusters: number
 
     /**
      * Shard list.
