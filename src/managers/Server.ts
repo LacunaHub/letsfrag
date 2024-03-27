@@ -132,7 +132,7 @@ export class Server extends NetIPCServer {
 
         if (!clientConnection) {
             response.error = makePlainError(new Error('Unknown connection'))
-            await respond(response)
+            await respond(response.toJSON())
 
             return false
         }
@@ -147,7 +147,7 @@ export class Server extends NetIPCServer {
 
             if (!shards.length) {
                 response.error = makePlainError(new Error('All shards are already started'))
-                await respond(response)
+                await respond(response.toJSON())
 
                 return false
             }
@@ -186,10 +186,10 @@ export class Server extends NetIPCServer {
 
             try {
                 const results = await Promise.all(promises)
-                response.type = IPCMessageType.ServerBroadcastResponse
+                response.type = IPCMessageType.ServerClientBroadcastResponse
                 response.data = results.map(v => v.data)
             } catch (err) {
-                response.type = IPCMessageType.ServerBroadcastResponse
+                response.type = IPCMessageType.ServerClientBroadcastResponse
                 response.error = makePlainError(err)
             }
         } else if (message.type === IPCMessageType.ServerClientHosts) {
