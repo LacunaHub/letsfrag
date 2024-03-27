@@ -98,7 +98,7 @@ export class ServerClient extends NetIPCClient {
             data: { script, options }
         })
 
-        const response: IPCRawMessage = await this.request(message, options.timeout)
+        const response: IPCRawMessage = await this.request(message.toJSON(), options.timeout)
 
         if (response.error) throw makeError(response.error)
 
@@ -133,7 +133,7 @@ export class ServerClient extends NetIPCClient {
             }
         })
 
-        return await this.send(message)
+        return await this.send(message.toJSON())
     }
 
     private async onRequest(message: IPCRawMessage, respond: NetIPCMessageRespond): Promise<boolean> {
@@ -148,10 +148,10 @@ export class ServerClient extends NetIPCClient {
                 const { script, options } = message.data,
                     data = await this.manager.broadcastEval(script, options)
 
-                response.type = IPCMessageType.ServerClientBroadcastResponse
+                response.type = IPCMessageType.ServerBroadcastResponse
                 response.data = data
             } catch (err) {
-                response.type = IPCMessageType.ServerClientBroadcastResponse
+                response.type = IPCMessageType.ServerBroadcastResponse
                 response.error = makePlainError(err)
             }
         } else if (message.type === IPCMessageType.ServerHostData) {
