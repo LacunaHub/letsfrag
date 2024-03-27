@@ -1,6 +1,6 @@
 {
   "name": "@lacunahub/letsfrag",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Scale your Discord bot across multiple machines.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
