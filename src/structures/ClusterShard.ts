@@ -1,4 +1,3 @@
-import { Client as DJSClient } from 'discord.js'
 import { EventEmitter } from 'events'
 import { workerData } from 'worker_threads'
 import { IPCHandler } from '../ipc/IPCHandler'
@@ -12,10 +11,11 @@ import {
 } from '../managers/ClusterManager'
 import { PromiseManager } from '../managers/PromiseManager'
 import { ClusterEnv } from './Cluster'
+import { ClusterShardClient } from './ClusterShardClient'
 import { ForkClient } from './ForkClient'
 import { ThreadClient } from './ThreadClient'
 
-export class ClusterShard<Client extends DJSClient = DJSClient> extends EventEmitter {
+export class ClusterShard<Client extends ClusterShardClient = ClusterShardClient> extends EventEmitter {
     /**
      * Time the shard was ready.
      */
