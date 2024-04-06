@@ -139,17 +139,19 @@ export class Server extends NetIPCServer {
 
         if (message.type === IPCMessageType.ServerClientShardList) {
             const botClients = [...this.clients.values()].filter(v => v.type === 'bot'),
-                occupiedShardCount = botClients.filter(v => v.shards.length).length * this.options.shardsPerHost
-            const shards = [...Array(this.options.shardCount).keys()].slice(
-                occupiedShardCount,
-                occupiedShardCount + this.options.shardsPerHost
-            )
+                occupiedShards = botClients.filter(v => v.shards.length).flatMap(v => v.shards)
+            let shards = []
 
-            if (!shards.length) {
-                response.error = makePlainError(new Error('All shards are already started'))
-                await respond(response.toJSON())
+            for (let shardId of [...Array(this.options.shardCount).keys()]) {
+                while (occupiedShards.includes(shardId) || shards.includes(shardId)) {
+                    shardId++
+                }
 
-                return false
+                shards.push(shardId)
+            }
+
+            if (shards.some(v => v + 1 > this.options.shardCount)) {
+                shards = shards.filter(v => v + 1 <= this.options.shardCount)
             }
 
             clientConnection.shards = shards
