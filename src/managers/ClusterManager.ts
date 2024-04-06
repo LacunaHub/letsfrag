@@ -113,12 +113,22 @@ export class ClusterManager extends EventEmitter {
             this.options.shardsPerCluster = Math.ceil(clusterShardCount / this.options.clusterCount)
         }
 
+        if (clusterShardCount / this.options.shardsPerCluster !== this.options.clusterCount) {
+            this.options.clusterCount = Math.ceil(clusterShardCount / this.options.shardsPerCluster)
+        }
+
         if (this.options.clusterCount > clusterShardCount)
             throw new Error('[ClusterManager#spawn] "clusterCount" cannot be more than "shardCount".')
         if (this.options.shardsPerCluster > clusterShardCount)
             throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be less than "shardCount".')
         if (this.options.shardsPerCluster < 1)
             throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be at least 1.')
+
+        const shards = chunkArray(this.shards, this.options.shardsPerCluster)
+
+        if (shards.length !== this.options.clusterCount) {
+            this.options.clusterCount = shards.length
+        }
 
         const clusteringData = await this.server.getClusteringData(this.options.clusterCount)
         this.clusters = clusteringData.clusters
@@ -127,8 +137,6 @@ export class ClusterManager extends EventEmitter {
             throw new Error('[ClusterManager#spawn] Shard identifier cannot be less than 0.')
         if (this.clusters.some(cluster => cluster < 0))
             throw new Error('[ClusterManager#spawn] Cluster identifier cannot be less than 0.')
-
-        const shards = chunkArray(this.shards, this.options.shardsPerCluster)
 
         for (const clusterId of this.clusters) {
             const i = this.clusters.indexOf(clusterId)
