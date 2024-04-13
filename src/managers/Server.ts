@@ -142,7 +142,7 @@ export class Server extends NetIPCServer {
                 occupiedShards = botClients.filter(v => v.shards.length).flatMap(v => v.shards)
             let shards = []
 
-            for (let shardId of [...Array(this.options.shardCount).keys()]) {
+            for (let shardId of [...Array(this.options.shardsPerHost).keys()]) {
                 while (occupiedShards.includes(shardId) || shards.includes(shardId)) {
                     shardId++
                 }
