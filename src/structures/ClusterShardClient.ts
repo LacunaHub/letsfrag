@@ -1,4 +1,4 @@
-import { Client, ClientOptions, REST } from 'discord.js'
+import { Client, ClientOptions } from 'discord.js'
 import { RequestManager, RequestManagerOptions } from '../rest/RequestManager'
 import { ClusterShard } from './ClusterShard'
 
@@ -9,7 +9,7 @@ export class ClusterShardClient extends Client {
     public cluster: ClusterShard<this>
 
     // @ts-ignore
-    public declare rest: RequestManager | REST
+    public declare rest: RequestManager
 
     constructor(options: ClusterShardClientOptions) {
         const info = ClusterShard.getInfo()
@@ -21,12 +21,7 @@ export class ClusterShardClient extends Client {
         })
 
         this.cluster = new ClusterShard(this)
-
-        if (typeof options.rest?.store !== 'undefined') {
-            this.rest = new RequestManager(options.rest)
-        } else {
-            this.rest = new REST(options.rest)
-        }
+        this.rest = new RequestManager(options.rest)
     }
 }
 

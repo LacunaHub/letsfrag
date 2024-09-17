@@ -4,8 +4,6 @@ import { RequestManagerOptions } from '../rest/RequestManager'
 
 export const DefaultRequestManagerOptions: RequestManagerOptions = {
     ...DefaultRestOptions,
-    store: {
-        serialize: JSONBI.stringify,
-        deserialize: JSONBI.parse
-    }
+    storeSerialize: JSONBI.stringify,
+    storeDeserialize: JSONBI.parse
 }
