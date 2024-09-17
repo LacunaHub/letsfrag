@@ -32,6 +32,13 @@ jobs:
         steps:
             - name: Checkout
               uses: actions/checkout@v4
+            - name: Setup Node & Docs
+              uses: actions/setup-node@v3
+              with:
+                  node-version: 20
+            - run: |
+                  npm ci
+                  npm run docs
             - name: Setup Pages
               uses: actions/configure-pages@v4
             - name: Upload artifact
