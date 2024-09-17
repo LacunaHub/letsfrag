@@ -1,3 +1,7 @@
+import KeyvRedis from '@keyv/redis'
+
+export const RedisStoreAdapter = KeyvRedis
+
 export * from './ipc/IPCHandler'
 export * from './ipc/IPCMessage'
 export * from './managers/ClusterManager'
@@ -13,4 +17,5 @@ export * from './structures/ServerClient'
 export * from './structures/SpawnQueue'
 export * from './structures/Thread'
 export * from './structures/ThreadClient'
+export * from './structures/WebhookClient'
 export * from './utils/Constants'

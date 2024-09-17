@@ -1,10 +1,12 @@
 import { AsyncQueue } from '@sapphire/async-queue'
-import { HandlerRequestData, RESTEvents, RateLimitData, ResponseLike, RouteData } from 'discord.js'
+import { HandlerRequestData, RateLimitData, ResponseLike, RouteData } from 'discord.js'
 import type { RequestInit } from 'undici'
 import { hasSublimit, normalizeRateLimitOffset, onRateLimit, sleep } from '../../utils/Utils'
 import {
+    RMEvents,
     RequestManager,
     RequestManagerHandlerData,
+    RequestManagerHashData,
     handleErrors,
     incrementInvalidCount,
     makeNetworkRequest
@@ -247,7 +249,7 @@ export class SequentialHandler {
             }
 
             // Let library users know they have hit a rate limit
-            this.manager.emit(RESTEvents.RateLimited, rateLimitData)
+            this.manager.emit(RMEvents.RateLimited, rateLimitData)
             // Determine whether a RateLimitError should be thrown
             await onRateLimit(this.manager, rateLimitData)
 
@@ -317,7 +319,7 @@ export class SequentialHandler {
         } else if (hash) {
             // Handle the case where hash value doesn't change
             // Fetch the hash data from the manager
-            const hashData = await this.manager.hashes.get(`${method}:${routeId.bucketRoute}`)
+            const hashData = await this.manager.hashes.get<RequestManagerHashData>(`${method}:${routeId.bucketRoute}`)
 
             // When fetched, update the last access of the hash
             if (hashData) {
@@ -444,7 +446,7 @@ export class SequentialHandler {
      * @param message - The message to debug
      */
     private debug(message: string) {
-        this.manager.emit(RESTEvents.Debug, `[REST ${this.id}] ${message}`)
+        this.manager.emit(RMEvents.Debug, `[REST ${this.id}] ${message}`)
     }
 
     public toJSON() {
