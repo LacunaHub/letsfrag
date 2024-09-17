@@ -29,6 +29,7 @@ export class Cluster extends EventEmitter {
         return this.readyAt > -1
     }
 
+    private data: ClusterEnv
     private env: NodeJS.ProcessEnv & ClusterEnv
 
     constructor(public readonly manager: ClusterManager, public id: number, public shards: number[]) {
@@ -38,12 +39,13 @@ export class Cluster extends EventEmitter {
 
         super()
 
-        this.env = Object.assign({}, process.env, {
+        this.data = {
             LF_CLUSTER_ID: this.id,
             LF_CLUSTER_MANAGER_MODE: this.manager.options.mode,
             LF_SHARD_COUNT: this.manager.shardCount,
             LF_SHARDS: this.shards
-        })
+        }
+        this.env = Object.assign({}, process.env, this.data)
     }
 
     /**
@@ -68,7 +70,7 @@ export class Cluster extends EventEmitter {
         this.thread =
             this.manager.options.mode === 'fork'
                 ? new Fork(this.manager.file, args, options)
-                : new Thread(this.manager.file, options)
+                : new Thread(this.manager.file, { ...options, workerData: this.data })
 
         this.thread
             .spawn()
