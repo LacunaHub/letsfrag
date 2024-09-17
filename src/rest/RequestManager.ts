@@ -1,4 +1,5 @@
 import {
+    APIRequest,
     BurstHandlerMajorIdKey,
     CDN,
     DefaultUserAgent,
@@ -6,12 +7,12 @@ import {
     DiscordErrorData,
     HTTPError,
     HandlerRequestData,
-    HashData,
     InternalRequest,
+    InvalidRequestWarningData,
     OAuthErrorData,
     OverwrittenMimeTypes,
-    RESTEvents,
     RESTOptions,
+    RateLimitData,
     RequestData,
     RequestHeaders,
     RequestMethod,
@@ -22,7 +23,8 @@ import {
     parseResponse
 } from 'discord.js'
 import { EventEmitter } from 'events'
-import Keyv from 'keyv'
+import JSONBI from 'json-bigint'
+import { Keyv, KeyvStoreAdapter } from 'keyv'
 import filetypeinfo from 'magic-bytes.js'
 import type { BodyInit, Dispatcher, RequestInit } from 'undici'
 import { DefaultRequestManagerOptions } from '../utils/Constants'
@@ -33,7 +35,7 @@ import { SequentialHandler } from './handlers/SequentialHandler'
 let invalidCount = 0,
     invalidCountResetTime: number | null = null
 
-export class RequestManager extends EventEmitter {
+export class RequestManager extends EventEmitter<RequestManagerEvents> {
     /**
      * The {@link https://undici.nodejs.org/#/docs/api/Agent | Agent} for all requests
      * performed by this manager.
@@ -60,12 +62,12 @@ export class RequestManager extends EventEmitter {
     /**
      * API bucket hashes that are cached from provided routes
      */
-    public readonly hashes: Keyv<HashData, Keyv.Options<RequestManagerOptions['store']>>
+    public readonly hashes: Keyv
 
     /**
      * Request handlers created from the bucket hash and the major parameters
      */
-    public readonly handlers: Keyv<RequestManagerHandlerData, Keyv.Options<RequestManagerOptions['store']>>
+    public readonly handlers: Keyv
 
     private token: string | null = null
 
@@ -73,19 +75,23 @@ export class RequestManager extends EventEmitter {
         super()
 
         this.options = { ...DefaultRequestManagerOptions, ...options }
-        this.options.store = { ...DefaultRequestManagerOptions.store, ...this.options.store }
         this.agent = this.options.agent ?? null
         this.cdn = new CDN(this.options.cdn)
         this.globalRemaining = Math.max(1, this.options.globalRequestsPerSecond)
 
-        this.hashes = new Keyv<HashData, Keyv.Options<any>>({
-            ...this.options.store,
-            namespace: `${this.options.store.namespace ?? 'rqm.'}hashes`,
-            ttl: this.options.hashLifetime
+        this.hashes = new Keyv({
+            store: this.options.store,
+            serialize: this.options.storeSerialize,
+            deserialize: this.options.storeDeserialize,
+            namespace: 'rqm.hashes',
+            ttl: this.options.hashSweepInterval
         })
-        this.handlers = new Keyv<RequestManagerHandlerData, Keyv.Options<any>>({
-            ...this.options.store,
-            namespace: `${this.options.store.namespace ?? 'rqm.'}handlers`,
+
+        this.handlers = new Keyv({
+            store: this.options.store,
+            serialize: this.options.storeSerialize,
+            deserialize: this.options.storeDeserialize,
+            namespace: 'rqm.handlers',
             ttl: this.options.handlerSweepInterval
         })
     }
@@ -180,13 +186,15 @@ export class RequestManager extends EventEmitter {
         // Generalize the endpoint to its route data
         const routeId = RequestManager.generateRouteData(request.fullRoute, request.method)
         // Get the bucket hash for the generic route, or point to a global route otherwise
-        const hash = (await this.hashes.get(`${request.method}:${routeId.bucketRoute}`)) ?? {
+        const hash = (await this.hashes.get<RequestManagerHashData>(`${request.method}:${routeId.bucketRoute}`)) ?? {
             value: `Global(${request.method}:${routeId.bucketRoute})`,
             lastAccess: -1
         }
 
         // Get the request handler for the obtained hash, with its major parameter
-        const handlerState = await this.handlers.get(`${hash.value}:${routeId.majorParameter}`),
+        const handlerState = await this.handlers.get<RequestManagerHandlerData>(
+                `${hash.value}:${routeId.majorParameter}`
+            ),
             handler = await this.createHandler(hash.value, routeId.majorParameter, handlerState)
 
         // Resolve the request into usable fetch options
@@ -441,9 +449,9 @@ export async function makeNetworkRequest(
         clearTimeout(timeout)
     }
 
-    if (manager.listenerCount(RESTEvents.Response)) {
+    if (manager.listenerCount(RMEvents.Response)) {
         manager.emit(
-            RESTEvents.Response,
+            RMEvents.Response,
             {
                 method: options.method ?? 'get',
                 path: routeId.original,
@@ -452,7 +460,7 @@ export async function makeNetworkRequest(
                 data: requestData,
                 retries
             },
-            res instanceof Response ? res.clone() : { ...res }
+            res instanceof Response ? (res.clone() as any) : { ...res }
         )
     }
 
@@ -534,15 +542,36 @@ export function incrementInvalidCount(manager: RequestManager) {
         invalidCount % manager.options.invalidRequestWarningInterval === 0
     if (emitInvalid) {
         // Let library users know periodically about invalid requests
-        manager.emit(RESTEvents.InvalidRequestWarning, {
+        manager.emit(RMEvents.InvalidRequestWarning, {
             count: invalidCount,
             remainingTime: invalidCountResetTime - Date.now()
         })
     }
 }
 
+export interface RequestManagerEvents {
+    debug: [info: string]
+    invalidRequestWarning: [invalidRequestInfo: InvalidRequestWarningData]
+    rateLimited: [rateLimitInfo: RateLimitData]
+    response: [request: APIRequest, response: ResponseLike]
+}
+
+export enum RMEvents {
+    Debug = 'debug',
+    InvalidRequestWarning = 'invalidRequestWarning',
+    RateLimited = 'rateLimited',
+    Response = 'response'
+}
+
 export interface RequestManagerOptions extends RESTOptions {
-    store: Keyv.Options<any>
+    store?: KeyvStoreAdapter
+    storeSerialize?: typeof JSONBI.stringify
+    storeDeserialize?: typeof JSONBI.parse
+}
+
+export interface RequestManagerHashData {
+    lastAccess: number
+    value: string
 }
 
 export interface RequestManagerHandlerData {

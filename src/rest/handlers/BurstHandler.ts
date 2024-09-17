@@ -1,7 +1,7 @@
-import { HandlerRequestData, RESTEvents, RateLimitData, ResponseLike, RouteData } from 'discord.js'
+import { HandlerRequestData, RateLimitData, ResponseLike, RouteData } from 'discord.js'
 import type { RequestInit } from 'undici'
 import { normalizeRateLimitOffset, onRateLimit, sleep } from '../../utils/Utils'
-import { RequestManager, handleErrors, incrementInvalidCount, makeNetworkRequest } from '../RequestManager'
+import { RMEvents, RequestManager, handleErrors, incrementInvalidCount, makeNetworkRequest } from '../RequestManager'
 
 /**
  * The structure used to handle burst requests for a given bucket.
@@ -150,7 +150,7 @@ export class BurstHandler {
      * @param message - The message to debug
      */
     private debug(message: string) {
-        this.manager.emit(RESTEvents.Debug, `[REST ${this.id}] ${message}`)
+        this.manager.emit(RMEvents.Debug, `[REST ${this.id}] ${message}`)
     }
 
     public toJSON() {
