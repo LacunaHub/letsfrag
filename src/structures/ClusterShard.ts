@@ -31,7 +31,7 @@ export class ClusterShard<Client extends ClusterShardClient = ClusterShardClient
     /**
      * Promise manager.
      */
-    public promises = new PromiseManager(this)
+    public promises = new PromiseManager()
 
     /**
      * Whether the shard is ready.
@@ -94,7 +94,10 @@ export class ClusterShard<Client extends ClusterShardClient = ClusterShardClient
             type: IPCMessageType.CustomRequest
         })
 
-        return await this.promises.create(message.nonce, options)
+        const response = await this.promises.create<IPCBaseMessage>(message.nonce, options)
+        if (response.error) throw new Error(response.error.message)
+
+        return response.data
     }
 
     /**
@@ -138,7 +141,10 @@ export class ClusterShard<Client extends ClusterShardClient = ClusterShardClient
 
         await this.process.send(message)
 
-        return await this.promises.create(message.nonce, { timeout: options.timeout })
+        const response = await this.promises.create<IPCBaseMessage>(message.nonce, { timeout: options.timeout })
+        if (response.error) throw new Error(response.error.message)
+
+        return response.data
     }
 
     /**
@@ -194,7 +200,10 @@ export class ClusterShard<Client extends ClusterShardClient = ClusterShardClient
 
         await this.process.send(message)
 
-        return await this.promises.create(message.nonce, { timeout: options.timeout })
+        const response = await this.promises.create<IPCBaseMessage>(message.nonce, { timeout: options.timeout })
+        if (response.error) throw new Error(response.error.message)
+
+        return response.data
     }
 
     /**

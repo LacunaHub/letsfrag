@@ -5,8 +5,8 @@ import os from 'os'
 import path from 'path'
 import { WorkerOptions, Worker as WorkerThread } from 'worker_threads'
 import { IPCMessage, IPCRawMessage } from '../ipc/IPCMessage'
+import { BrokerClient, BrokerClientOptions } from '../structures/BrokerClient'
 import { Cluster } from '../structures/Cluster'
-import { ServerClient, ServerClientOptions } from '../structures/ServerClient'
 import { SpawnQueue } from '../structures/SpawnQueue'
 import { chunkArray, sleep } from '../utils/Utils'
 import { PromiseManager } from './PromiseManager'
@@ -20,7 +20,7 @@ export class ClusterManager extends EventEmitter {
     /**
      * Server client.
      */
-    public server: ServerClient
+    public brokerClient: BrokerClient
 
     /**
      * Map of cluster instances.
@@ -30,7 +30,7 @@ export class ClusterManager extends EventEmitter {
     /**
      * Promise manager.
      */
-    public promises = new PromiseManager(this)
+    public promises = new PromiseManager()
 
     /**
      * Total number of shards.
@@ -66,14 +66,10 @@ export class ClusterManager extends EventEmitter {
         this.file = path.isAbsolute(file) ? file : path.resolve(process.cwd(), file)
 
         if (!fs.statSync(this.file).isFile()) throw new TypeError(`[ClusterManager] "${this.file}" is not a file.`)
-        if (!options.server?.host) throw new TypeError('[ClusterManager] "server.host" is required.')
-        if (typeof options.server?.port !== 'number')
-            throw new TypeError('[ClusterManager] "server.port" must be a number.')
-        if (!options.server.authorization) throw new TypeError('[ClusterManager] "server.authorization" is required.')
         if (!['fork', 'thread'].includes(options.mode))
             throw new TypeError('[ClusterManager] "mode" must be "fork" or "thread".')
 
-        this.server = new ServerClient(this, options.server)
+        this.brokerClient = new BrokerClient(this, options.brokerClient)
 
         this.options.clusterCount = +options.clusterCount || -1
         this.options.shardsPerCluster = +options.shardsPerCluster || -1
@@ -95,10 +91,9 @@ export class ClusterManager extends EventEmitter {
                 }
             )
 
-        await this.server.connect()
+        await this.brokerClient.connect()
 
-        const shardingData = await this.server.getShardingData()
-
+        const shardingData = await this.brokerClient.getShardingData()
         this.shardCount = shardingData.shardCount
         this.shards = shardingData.shards
         const clusterShardCount = this.shards.length
@@ -130,7 +125,7 @@ export class ClusterManager extends EventEmitter {
             this.options.clusterCount = shards.length
         }
 
-        const clusteringData = await this.server.getClusteringData(this.options.clusterCount)
+        const clusteringData = await this.brokerClient.getClusteringData(this.options.clusterCount)
         this.clusters = clusteringData.clusters
 
         if (this.shards.some(shard => shard < 0))
@@ -336,7 +331,7 @@ export interface ClusterManagerOptions<T extends ClusterManagerMode> {
     /**
      * Server options.
      */
-    server: ServerClientOptions
+    brokerClient: BrokerClientOptions
 
     /**
      * Mode of the cluster manager.

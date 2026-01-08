@@ -175,7 +175,10 @@ export class Cluster extends EventEmitter {
 
         await this.thread.send(baseMessage)
 
-        return await this.manager.promises.create(baseMessage.nonce, { timeout })
+        const response = await this.manager.promises.create<IPCBaseMessage>(baseMessage.nonce, { timeout })
+        if (response.error) throw new Error(response.error.message)
+
+        return response.data
     }
 
     /**
@@ -218,7 +221,10 @@ export class Cluster extends EventEmitter {
 
         await this.thread.send(message)
 
-        return await this.manager.promises.create(message.nonce, { timeout: options.timeout })
+        const response = await this.manager.promises.create<IPCBaseMessage>(message.nonce, { timeout: options.timeout })
+        if (response.error) throw new Error(response.error.message)
+
+        return response.data
     }
 
     private onThreadMessage(message: IPCRawMessage): void {

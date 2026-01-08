@@ -2,28 +2,30 @@ name: Bump version
 
 on:
     pull_request:
-        branches: [master]
+        branches: [prod]
         types: [labeled]
     workflow_dispatch:
 
 jobs:
     commit:
+        if: ${{ contains(github.event.label.name, 'major') || contains(github.event.label.name, 'minor') || contains(github.event.label.name, 'patch') }}
         runs-on: ubuntu-latest
+
         steps:
             - uses: actions/checkout@v3
             - uses: actions/setup-node@v3
               with:
-                  node-version: 20
+                  node-version: 22
             - name: Get semver
               id: semver
               run: |
-                  semver="patch"
+                  semver=""
 
-                  if [[ "${{ github.event.label.name }}" == *"minor"* ]]
-                  then
+                  if [[ "${{ github.event.label.name }}" == *"patch"* ]]; then
+                      semver='patch'
+                  elif [[ "${{ github.event.label.name }}" == *"minor"* ]]; then
                       semver='minor'
-                  elif [[ "${{ github.event.label.name }}" == *"major"* ]]
-                  then
+                  elif [[ "${{ github.event.label.name }}" == *"major"* ]]; then
                       semver='major'
                   fi
 

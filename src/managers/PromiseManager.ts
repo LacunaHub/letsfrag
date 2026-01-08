@@ -1,26 +1,39 @@
-import { makeError } from 'discord.js'
+import { makeError, MakeErrorOptions } from 'discord.js'
 import { IPCBaseMessage } from '../ipc/IPCMessage'
-import { ClusterShard } from '../structures/ClusterShard'
-import { ClusterManager } from './ClusterManager'
 
-export class PromiseManager<T extends ClusterManager | ClusterShard> {
+export class PromiseManager {
     public cache = new Map<string, CachedPromise>()
 
-    constructor(public instance: T) {}
+    public has(nonce: string): boolean {
+        return this.cache.has(nonce)
+    }
 
-    public resolve(message: IPCBaseMessage): void {
+    public resolve(nonce: string, value?: unknown): void {
+        const promise = this.cache.get(nonce)
+        if (!promise) return
+
+        if (promise.timeout) clearTimeout(promise.timeout)
+        this.cache.delete(nonce)
+        promise.resolve(value)
+    }
+
+    public reject(nonce: string, error: Error | MakeErrorOptions): void {
+        const promise = this.cache.get(nonce)
+        if (!promise) return
+
+        if (promise.timeout) clearTimeout(promise.timeout)
+        this.cache.delete(nonce)
+        promise.reject(error instanceof Error ? error : makeError(error))
+    }
+
+    public resolveMessage(message: IPCBaseMessage): void {
         const promise = this.cache.get(message.nonce)
-
         if (!promise) return
 
         if (promise.timeout) clearTimeout(promise.timeout)
         this.cache.delete(message.nonce)
 
-        if (typeof message.error === 'undefined') {
-            return promise.resolve(message.data)
-        } else {
-            return promise.reject(makeError(message.error))
-        }
+        promise.resolve(message)
     }
 
     public async create<T>(nonce: string, options: { timeout?: number } = {}): Promise<T> {
@@ -40,8 +53,6 @@ export class PromiseManager<T extends ClusterManager | ClusterShard> {
 
 export interface CachedPromise {
     timeout?: NodeJS.Timeout
-
     resolve(value: unknown): void
-
     reject(error: Error): void
 }
