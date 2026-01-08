@@ -36,7 +36,7 @@ export class IPCHandler<T extends Cluster | ClusterShard> {
                     })
                 }
             } else if (message.type === IPCMessageType.ClusterShardEvalResponse) {
-                this.instance.manager.promises.resolve(baseMessage)
+                this.instance.manager.promises.resolveMessage(baseMessage)
             } else if (message.type === IPCMessageType.ClusterManagerEval) {
                 const { script, options } = message.data,
                     result = await this.instance.manager.eval(script, options)
@@ -81,7 +81,9 @@ export class IPCHandler<T extends Cluster | ClusterShard> {
             this.instance.emit('debug', { from: 'IPCHandlerClusterShard#handleMessage', data: message })
 
             if (message.type === IPCMessageType.ClusterManagerBroadcastResponse) {
-                this.instance.promises.resolve(baseMessage)
+                this.instance.promises.resolveMessage(baseMessage)
+            } else if (message.type === IPCMessageType.ClusterManagerEvalResponse) {
+                this.instance.promises.resolveMessage(baseMessage)
             } else if (message.type === IPCMessageType.ClusterShardEval) {
                 const { script } = message.data
 
