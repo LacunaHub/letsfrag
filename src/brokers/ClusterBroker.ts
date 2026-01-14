@@ -2,9 +2,8 @@ import { fetchRecommendedShardCount, makePlainError } from 'discord.js'
 import { EventEmitter } from 'events'
 import { RedisOptions } from 'ioredis'
 import { IPCBaseMessage, IPCMessageType, IPCRawMessage } from '../ipc/IPCMessage'
-import { DebugMessage } from '../managers/ClusterManager'
 import { PromiseManager } from '../managers/PromiseManager'
-import { BrokerChannels, RedisBroker, getClusterManagerChannel } from './RedisBroker'
+import { BrokerChannels, getClusterManagerChannel, RedisBroker } from './RedisBroker'
 
 const DEFAULT_CLIENT_TIMEOUT = 45_000 // 45 seconds (3x heartbeat interval)
 const DEFAULT_CLEANUP_INTERVAL = 15_000 // 15 seconds
@@ -13,7 +12,9 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
     public readonly broker: RedisBroker
     public readonly promises = new PromiseManager()
 
-    public clients = new Map<string, BrokerClientConnection>()
+    public readonly clients = new Map<string, BrokerClientConnection>()
+
+    public shardsPerHost: number
 
     private cleanupInterval: NodeJS.Timeout | null = null
 
@@ -24,7 +25,6 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
             throw new TypeError('[ClusterBroker] "hostCount" must be a number and greater than 0.')
 
         this.options.shardCount = +options.shardCount || -1
-        this.options.shardsPerHost = +options.shardsPerHost || -1
         this.options.botToken = options.botToken || null
         this.options.clientTimeout = options.clientTimeout ?? DEFAULT_CLIENT_TIMEOUT
 
@@ -48,11 +48,8 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
         if (this.options.hostCount > this.options.shardCount)
             throw new Error('[ClusterBroker] "hostCount" cannot be more than "shardCount".')
 
-        if (this.options.shardsPerHost === -1) {
-            this.options.shardsPerHost = Math.ceil(this.options.shardCount / this.options.hostCount)
-        }
-
-        if (this.options.shardsPerHost > this.options.shardCount)
+        this.shardsPerHost = Math.ceil(this.options.shardCount / this.options.hostCount)
+        if (this.shardsPerHost > this.options.shardCount)
             throw new Error('[ClusterBroker] "shardsPerHost" must be less than "shardCount".')
 
         await this.broker.connect()
@@ -60,7 +57,6 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
 
         // Start cleanup interval to remove dead clients
         this.startCleanupInterval()
-
         this.emit('ready')
 
         return this
@@ -68,7 +64,7 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
 
     public async close(): Promise<void> {
         this.stopCleanupInterval()
-        await this.broker.disconnect()
+        this.broker.disconnect()
         this.emit('close')
     }
 
@@ -104,10 +100,6 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
                 if (now - client.lastHeartbeat > timeout) {
                     this.clients.delete(clientId)
                     this.emit('disconnect', client, 'Heartbeat timeout')
-                    this.emit('debug', {
-                        from: 'ClusterBroker#cleanup',
-                        data: `Client ${clientId} removed (heartbeat timeout)`
-                    })
                 }
             }
         }, DEFAULT_CLEANUP_INTERVAL)
@@ -121,8 +113,6 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
     }
 
     private async onMessage(channel: string, message: IPCBaseMessage): Promise<void> {
-        this.emit('debug', { from: 'ClusterBroker#onMessage', data: { channel, message } })
-
         if (typeof message.type === 'undefined') return
 
         // Handle responses to pending requests
@@ -150,7 +140,7 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
 
             this.clients.set(clientId, clientConnection)
             this.emit('connect', clientConnection)
-            this.emit('debug', { from: 'ClusterBroker#onMessage', data: `Client ${clientId} connected` })
+
             return
         }
 
@@ -162,8 +152,8 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
                 clientConnection.lastHeartbeat = Date.now()
                 clientConnection.shards = shards ?? clientConnection.shards
                 clientConnection.clusters = clusters ?? clientConnection.clusters
-                this.emit('debug', { from: 'ClusterBroker#onMessage', data: `Heartbeat from ${clientId}` })
             }
+
             return
         }
 
@@ -174,38 +164,23 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
             if (clientConnection) {
                 this.clients.delete(clientId)
                 this.emit('disconnect', clientConnection, 'Client disconnected')
-                this.emit('debug', { from: 'ClusterBroker#onMessage', data: `Client ${clientId} disconnected` })
             }
             return
         }
 
         const clientId = rawMessage.data?.clientId
         const clientConnection = this.clients.get(clientId)
-
-        if (!clientConnection) {
-            this.emit('debug', {
-                from: 'ClusterBroker#onMessage',
-                data: `Unknown client: ${clientId}, type: ${rawMessage.type}, available: ${[
-                    ...this.clients.keys()
-                ].join(', ')}`
-            })
-            return
-        }
+        if (!clientConnection) return
 
         // Update heartbeat on any message from client
         clientConnection.lastHeartbeat = Date.now()
-
-        this.emit('debug', {
-            from: 'ClusterBroker#onMessage',
-            data: `Received ${rawMessage.type} from ${clientId}`
-        })
 
         if (rawMessage.type === IPCMessageType.BrokerClientShardList) {
             const botClients = [...this.clients.values()].filter(v => v.type === 'bot')
             const occupiedShards = botClients.filter(v => v.shards.length).flatMap(v => v.shards)
             let shards: number[] = []
 
-            for (let shardId of [...Array(this.options.shardsPerHost).keys()]) {
+            for (let shardId of [...Array(this.shardsPerHost).keys()]) {
                 while (occupiedShards.includes(shardId) || shards.includes(shardId)) {
                     shardId++
                 }
@@ -222,14 +197,6 @@ export class ClusterBroker extends EventEmitter<ClusterBrokerEvents> {
                 nonce: message.nonce,
                 type: IPCMessageType.BrokerClientShardListResponse,
                 data: { shards, shardCount: this.options.shardCount }
-            })
-
-            this.emit('debug', {
-                from: 'ClusterBroker#onMessage',
-                data: `Sending shard list to ${clientId}: ${JSON.stringify({
-                    shards,
-                    shardCount: this.options.shardCount
-                })}`
             })
 
             await this.send(clientId, response)
@@ -328,15 +295,13 @@ export interface ClusterBrokerEvents {
     close: []
     clientRequest: [connection: BrokerClientConnection, message: IPCRawMessage, respond: (data: any) => Promise<void>]
     clientMessage: [connection: BrokerClientConnection, message: IPCRawMessage]
-    debug: [message: DebugMessage]
 }
 
 export interface ClusterBrokerOptions {
     redis: RedisOptions | string
+    botToken: string
     hostCount: number
     shardCount?: number
-    shardsPerHost?: number
-    botToken?: string
     clientTimeout?: number
 }
 

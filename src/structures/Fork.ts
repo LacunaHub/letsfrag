@@ -1,28 +1,43 @@
 import { ChildProcess, ForkOptions, fork } from 'child_process'
 import { IPCRawMessage } from '../ipc/IPCMessage'
 
+/**
+ * Wrapper for managing a forked child process.
+ */
 export class Fork {
-    public process: ChildProcess | null = null
+    /**
+     * The child process instance.
+     */
+    public process?: ChildProcess
 
-    constructor(public file: string, public args: string[], public options: ForkOptions) {}
+    /**
+     * @param file - Path to the file to execute in the child process
+     * @param args - Arguments to pass to the child process
+     * @param options - Node.js fork options
+     */
+    constructor(public readonly file: string, public readonly args: string[], public readonly options: ForkOptions) {}
 
     /**
      * Spawns the child process.
+     * @returns The spawned child process
      */
     public spawn(): ChildProcess {
+        if (this.process) this.kill()
         return (this.process = fork(this.file, this.args, this.options))
     }
 
     /**
      * Kills the child process.
      */
-    public kill(): boolean {
-        this.process?.removeAllListeners?.()
-        return this.process?.kill?.() ?? false
+    public kill(): void {
+        this.process?.removeAllListeners()
+        this.process?.kill()
+        this.process = null
     }
 
     /**
      * Respawns the child process.
+     * @returns The new child process instance
      */
     public respawn(): ChildProcess {
         this.kill()
@@ -31,11 +46,12 @@ export class Fork {
 
     /**
      * Sends a message to the child process.
-     * @param message IPC message.
+     * @param message - IPC message to send
+     * @returns Promise that resolves when the message is sent
      */
     public send(message: IPCRawMessage): Promise<void> {
         return new Promise((resolve, reject) => {
-            this.process?.send?.(message, err => (err ? reject(err) : resolve()))
+            this.process?.send(message, (err: Error | null) => (err ? reject(err) : resolve()))
         })
     }
 }

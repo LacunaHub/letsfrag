@@ -32,31 +32,31 @@ export class RedisBroker extends EventEmitter<RedisBrokerEvents> {
         })
     }
 
-    async connect(): Promise<void> {
+    public async connect(): Promise<void> {
         await Promise.all([this.pub.connect(), this.sub.connect()])
         this.emit('ready')
     }
 
-    async disconnect(): Promise<void> {
+    public disconnect(): void {
         this.sub.disconnect()
         this.pub.disconnect()
     }
 
-    async subscribe(channel: string): Promise<void> {
+    public async subscribe(channel: string): Promise<void> {
         if (this.subscriptions.has(channel)) return
 
         await this.sub.subscribe(channel)
         this.subscriptions.add(channel)
     }
 
-    async unsubscribe(channel: string): Promise<void> {
+    public async unsubscribe(channel: string): Promise<void> {
         if (!this.subscriptions.has(channel)) return
 
         await this.sub.unsubscribe(channel)
         this.subscriptions.delete(channel)
     }
 
-    async publish(channel: string, message: IPCBaseMessage): Promise<void> {
+    public async publish(channel: string, message: IPCBaseMessage): Promise<void> {
         await this.pub.publish(channel, JSON.stringify(message))
     }
 }

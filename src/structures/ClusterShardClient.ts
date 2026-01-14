@@ -1,12 +1,32 @@
 import { Client, ClientOptions } from 'discord.js'
 import { ClusterShard } from './ClusterShard'
 
+/**
+ * Extended Discord.js Client with built-in cluster shard management.
+ * This client automatically configures sharding based on environment variables
+ * and provides IPC communication with the parent ClusterManager.
+ *
+ * @example
+ * ```typescript
+ * import { ClusterShardClient } from '@lacunahub/letsfrag'
+ * import { GatewayIntentBits } from 'discord.js'
+ *
+ * const client = new ClusterShardClient({
+ *     intents: [GatewayIntentBits.Guilds]
+ * })
+ *
+ * client.login('your_token')
+ * ```
+ */
 export class ClusterShardClient extends Client {
     /**
-     * The instance of cluster shard.
+     * The cluster shard instance managing IPC communication and cluster operations.
      */
-    public cluster: ClusterShard<this>
+    public clusterShard: ClusterShard<this>
 
+    /**
+     * @param options - Discord.js client options
+     */
     constructor(options: ClientOptions) {
         const info = ClusterShard.getInfo()
 
@@ -16,6 +36,6 @@ export class ClusterShardClient extends Client {
             shards: info.shards
         })
 
-        this.cluster = new ClusterShard(this)
+        this.clusterShard = new ClusterShard(this)
     }
 }
