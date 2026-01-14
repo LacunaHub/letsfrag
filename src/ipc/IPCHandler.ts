@@ -10,8 +10,6 @@ export class IPCHandler<T extends Cluster | ClusterShard> {
     public async handleMessage(message: IPCRawMessage): Promise<void> {
         const baseMessage = new IPCBaseMessage(message)
         if (this.instance instanceof Cluster) {
-            this.instance.emit('debug', { from: 'IPCHandlerCluster#handleMessage', data: message })
-
             if (message.type === IPCMessageType.ClusterManagerBroadcast) {
                 await this.instance.manager.broadcast(message.data.message)
             } else if (message.type === IPCMessageType.ClusterManagerBroadcastEval) {
@@ -19,7 +17,7 @@ export class IPCHandler<T extends Cluster | ClusterShard> {
                     const { script, options } = message.data,
                         results = await this.instance.manager.broadcastEval(script, options)
 
-                    await this.instance.thread.send({
+                    await this.instance.cp.send({
                         ...new IPCBaseMessage({
                             nonce: message.nonce,
                             type: IPCMessageType.ClusterManagerBroadcastResponse,
@@ -27,7 +25,7 @@ export class IPCHandler<T extends Cluster | ClusterShard> {
                         })
                     })
                 } catch (err) {
-                    await this.instance.thread.send({
+                    await this.instance.cp.send({
                         ...new IPCBaseMessage({
                             nonce: message.nonce,
                             type: IPCMessageType.ClusterManagerBroadcastResponse,
@@ -37,52 +35,27 @@ export class IPCHandler<T extends Cluster | ClusterShard> {
                 }
             } else if (message.type === IPCMessageType.ClusterShardEvalResponse) {
                 this.instance.manager.promises.resolveMessage(baseMessage)
-            } else if (message.type === IPCMessageType.ClusterManagerEval) {
-                const { script, options } = message.data,
-                    result = await this.instance.manager.eval(script, options)
-
-                if (result.error) {
-                    await this.instance.thread.send({
-                        ...new IPCBaseMessage({
-                            nonce: message.nonce,
-                            type: IPCMessageType.ClusterManagerEvalResponse,
-                            error: makePlainError(result.error)
-                        })
-                    })
-                } else {
-                    await this.instance.thread.send({
-                        ...new IPCBaseMessage({
-                            nonce: message.nonce,
-                            type: IPCMessageType.ClusterManagerEvalResponse,
-                            data: result
-                        })
-                    })
-                }
             } else if (message.type === IPCMessageType.ClusterReady) {
                 this.instance.readyAt = Date.now()
-                this.instance.emit('ready', this.instance)
+                this.instance.emit('ready')
 
                 if (this.instance.manager.cache.size === this.instance.manager.options.clusterCount) {
                     this.instance.manager.readyAt = Date.now()
-                    this.instance.manager.emit('ready', this.instance.manager)
+                    this.instance.manager.emit('ready')
                 }
             } else if (message.type === IPCMessageType.ClusterRespawn) {
                 const { spawnDelay, spawnTimeout } = message.data
 
                 await this.instance.respawn(spawnDelay, spawnTimeout)
-            } else if (message.type === IPCMessageType.ClusterManagerRespawnAll) {
+            } else if (message.type === IPCMessageType.ClusterManagerRespawnClusters) {
                 const { spawnDelay, shardSpawnDelay, shardSpawnTimeout } = message.data as RespawnOptions
 
-                await this.instance.manager.respawnAll({ spawnDelay, shardSpawnDelay, shardSpawnTimeout })
+                await this.instance.manager.respawnClusters({ spawnDelay, shardSpawnDelay, shardSpawnTimeout })
             } else if (message.type === IPCMessageType.ClusterManagerSpawnNextCluster) {
                 await this.instance.manager.spawnQueue.next()
             }
         } else {
-            this.instance.emit('debug', { from: 'IPCHandlerClusterShard#handleMessage', data: message })
-
             if (message.type === IPCMessageType.ClusterManagerBroadcastResponse) {
-                this.instance.promises.resolveMessage(baseMessage)
-            } else if (message.type === IPCMessageType.ClusterManagerEvalResponse) {
                 this.instance.promises.resolveMessage(baseMessage)
             } else if (message.type === IPCMessageType.ClusterShardEval) {
                 const { script } = message.data

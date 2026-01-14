@@ -155,7 +155,6 @@ const clusterManager = new ClusterManager(`${__dirname}/client.js`, {
         redis: 'redis://localhost:6379',
         type: 'bot'
     },
-    mode: 'fork',
     spawnDelay: 10_000
 })
 

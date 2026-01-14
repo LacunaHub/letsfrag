@@ -2,14 +2,6 @@ export function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-export function generateId(length: number = 10): string {
-    if (typeof length !== 'number') length = 4
-    if (length < 4) length = 4
-    if (length > 11) length = 11
-
-    return `${Math.random().toString(36).substring(2, length)}`
-}
-
 export function chunkArray(array: any[], length: number = 10): any[] {
     if (!Array.isArray(array)) array = []
     if (typeof length !== 'number') length = 10
@@ -21,4 +13,19 @@ export function chunkArray(array: any[], length: number = 10): any[] {
     }
 
     return arr
+}
+
+/**
+ * Serializes script to string format.
+ * @param script - Script to serialize
+ * @param context - Context to pass to the script
+ * @returns Serialized script
+ */
+export function serializeScript(script: string | Function, context?: any): string {
+    return typeof script === 'function' ? `(${script})(this,${JSON.stringify(context)})` : script
+}
+
+export interface DebugMessage {
+    from: string
+    data: any
 }
