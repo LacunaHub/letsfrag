@@ -5,10 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup",
-    "docs": "typedoc src/index.ts --plugin typedoc-material-theme --out docs",
-    "format": "npx prettier . --write",
-    "prepare": "npm run build"
+    "build": "tsup"
   },
   "tsup": {
     "entry": [
@@ -18,9 +15,6 @@
     "sourcemap": true,
     "clean": true,
     "dts": true
-  },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com/@lacunahub"
   },
   "repository": {
     "type": "git",
@@ -32,26 +26,25 @@
     "discord",
     "bot"
   ],
-  "author": "LacunaHub",
+  "author": "Lacuna (https://github.com/LacunaHub)",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/LacunaHub/letsfrag/issues"
   },
   "homepage": "https://github.com/LacunaHub/letsfrag#readme",
   "dependencies": {
+    "@danliyev/wishmap": "^1.0.3",
     "ioredis": "^5.4.1",
-    "node-os-utils": "^1.3.7",
-    "tslib": "^2.7.0"
+    "node-cron": "^4.2.1",
+    "node-os-utils": "^2.0.1"
   },
   "peerDependencies": {
     "discord.js": ">=14.0.0"
   },
   "devDependencies": {
-    "discord.js": "^14.16.2",
     "@types/node": "^20.16.5",
-    "@types/node-os-utils": "^1.3.4",
-    "tsup": "^8.0.2",
-    "typedoc": "^0.25.12",
-    "typedoc-material-theme": "^1.0.2"
+    "discord.js": ">=14.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
   }
 }

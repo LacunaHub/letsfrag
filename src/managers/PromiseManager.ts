@@ -1,8 +1,8 @@
+import { WishMap } from '@danliyev/wishmap'
 import { makeError, MakeErrorOptions } from 'discord.js'
-import { IPCBaseMessage } from '../ipc/IPCMessage'
 
 export class PromiseManager {
-    public cache = new Map<string, CachedPromise>()
+    public cache = new WishMap<string, CachedPromise>()
 
     public has(nonce: string): boolean {
         return this.cache.has(nonce)
@@ -26,18 +26,8 @@ export class PromiseManager {
         promise.reject(error instanceof Error ? error : makeError(error))
     }
 
-    public resolveMessage(message: IPCBaseMessage): void {
-        const promise = this.cache.get(message.nonce)
-        if (!promise) return
-
-        if (promise.timeout) clearTimeout(promise.timeout)
-        this.cache.delete(message.nonce)
-
-        promise.resolve(message)
-    }
-
-    public async create<T>(nonce: string, options: { timeout?: number } = {}): Promise<T> {
-        return await new Promise<T>((resolve, reject) => {
+    public create<T>(nonce: string, options: { timeout?: number } = {}): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
             const timeout =
                 typeof options.timeout === 'number'
                     ? setTimeout(() => {

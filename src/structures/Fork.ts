@@ -1,5 +1,5 @@
 import { ChildProcess, ForkOptions, fork } from 'child_process'
-import { IPCRawMessage } from '../ipc/IPCMessage'
+import { IPCMessage } from './IPCMessage'
 
 /**
  * Wrapper for managing a forked child process.
@@ -49,7 +49,7 @@ export class Fork {
      * @param message - IPC message to send
      * @returns Promise that resolves when the message is sent
      */
-    public send(message: IPCRawMessage): Promise<void> {
+    public send(message: IPCMessage): Promise<void> {
         return new Promise((resolve, reject) => {
             this.process?.send(message, (err: Error | null) => (err ? reject(err) : resolve()))
         })

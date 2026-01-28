@@ -5,81 +5,71 @@ This package is inspired by [discord-hybrid-sharding](https://github.com/meister
 ## Architecture Overview
 
 ```mermaid
-graph TB
-    subgraph Redis["Redis Server"]
-        CH1["letsfrag:cb<br/>(ClusterBroker channel)"]
-        CH2["letsfrag:cm:id<br/>(BrokerClient channels)"]
-        CH3["letsfrag:broadcast<br/>(Broadcast channel)"]
-    end
+flowchart TD
+    Redis[(Redis)]
+    ClusterBroker((ClusterBroker))
+    BrokerClient([BrokerClient])
+    ClusterManager{ClusterManager}
+    Cluster0(Cluster)
+    Cluster1(Cluster)
+    Client0{{Client}}
+    Client1{{Client}}
+    Client2{{Client}}
+    Client3{{Client}}
 
-    subgraph Broker["ClusterBroker"]
-        CB["Assigns shards<br/>Tracks clients<br/>Health monitoring"]
-    end
-
-    subgraph Host1["Host 1"]
-        BC1["BrokerClient"]
-        CM1["ClusterManager"]
-        CL1["Clusters<br/>"]
-        BC1 <--> CM1
-        CM1 <--> CL1
-    end
-
-    subgraph Host2["Host 2"]
-        BC2["BrokerClient"]
-        CM2["ClusterManager"]
-        CL2["Clusters<br/>"]
-        BC2 <--> CM2
-        CM2 <--> CL2
-    end
-
-    Broker <-->|"PubSub"| Redis
-    BC1 <-->|"PubSub"| Redis
-    BC2 <-->|"PubSub"| Redis
-
-    style Redis fill:#ff6b6b
-    style Broker fill:#31ccec
+    Redis <-->|"PubSub"| ClusterBroker
+    Redis <-->|"PubSub"| BrokerClient
+    BrokerClient <--> ClusterManager
+    ClusterManager <--> Cluster0
+    ClusterManager <--> Cluster1
+    Cluster0 <-->|"IPC"| Client0
+    Cluster0 <-->|"IPC"| Client1
+    Cluster1 <-->|"IPC"| Client2
+    Cluster1 <-->|"IPC"| Client3
 ```
 
 ### How It Works
 
-1. **ClusterBroker** runs on a separate machine and manages shard distribution
-2. Each host runs a **BrokerClient** that connects to Redis and requests shards
-3. **ClusterManager** on each host spawns clusters with assigned shards
-4. All communication happens through **Redis PubSub** channels
-5. **Heartbeat system** monitors client health
+1. **ClusterBroker** manages shard distribution
+2. Each **ClusterManager** connects to the **ClusterBroker** via **BrokerClient** and spawns assigned shards
+3. All communication between **ClusterBroker** and **BrokerClient** happens through **Redis PubSub** channels
 
 ## Key Features
 
--   **Redis PubSub**: Fast, reliable inter-process communication using Redis
--   **Distributed Architecture**: Scale across unlimited hosts/machines
--   **Automatic Shard Distribution**: ClusterBroker automatically assigns shards to available hosts
--   **Health Monitoring**: Automatic detection and cleanup of dead clients
--   **Hot Reload**: Add or remove hosts without restarting the entire system
--   **Type-Safe**: Full TypeScript support with proper typings
+- **Redis PubSub**: Fast, reliable inter-process communication using Redis
+- **Distributed architecture**: Scale across unlimited hosts/machines
+- **Automatic shard distribution**: ClusterBroker automatically assigns shards to available cluster managers
+- **Health monitoring**: Automatic respawn of dead shards
+- **Hot reload**: Add or remove managers without restarting the entire system
+- **Type-Safe**: Full TypeScript support with proper typings
 
 # Links
 
--   [API Documentation](https://lacunahub.github.io/letsfrag)
+- [API Docs](https://lacunahub.github.io/letsfrag)
 
 # Installation
 
-This package is hosted on GitHub Packages and requires authentication.
+## Using NPM Registry
 
-## Quick Setup
+```bash
+npm install @lacunahub/letsfrag
+```
+
+## Using GitHub Packages Registry
 
 1. Create a [GitHub Personal Access Token](https://github.com/settings/tokens/new) with `read:packages` scope
 
 2. Add to your shell profile (`.bashrc`, `.zshrc`, or `.profile`):
 
 ```bash
-export GH_PKG_TOKEN=your_token_here
+export GITHUB_TOKEN=your_token_here
 ```
 
 3. In your project directory, create `.npmrc`:
 
 ```
 @lacunahub:registry=https://npm.pkg.github.com/
-//npm.pkg.github.com/:_authToken=${GH_PKG_TOKEN}
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
 4. Install:
@@ -131,37 +121,32 @@ docker run -d -p 6379:6379 redis:latest
 import { ClusterBroker } from '@lacunahub/letsfrag'
 
 const broker = new ClusterBroker({
-    redis: 'redis://localhost:6379', // or { host: 'localhost', port: 6379 }
-    hostCount: 2,
-    shardCount: 80,
+    redisURI: 'redis://localhost:6379',
     botToken: process.env.BOT_TOKEN
 })
 
-broker.on('connect', client => console.info(`Client "${client.id}" connected`))
-broker.on('disconnect', (client, reason) => console.warn(`Client "${client.id}" disconnected: ${reason}`))
-broker.on('error', err => console.error(err))
 broker.on('ready', () => console.info('ClusterBroker is ready'))
+broker.on('error', err => console.error(err))
+broker.on('clientConnect', client => console.info(`Client "${client.id}" connected`))
 
 broker.initialize()
 ```
 
-`src/cluster.ts` (Run on each host)
+`src/cluster.ts`
 
 ```ts
 import { ClusterManager } from '@lacunahub/letsfrag'
 
 const clusterManager = new ClusterManager(`${__dirname}/client.js`, {
-    broker: {
-        redis: 'redis://localhost:6379',
-        type: 'bot'
-    },
-    spawnDelay: 10_000
+    brokerClient: {
+        redisURI: 'redis://localhost:6379'
+    }
 })
 
-clusterManager.on('clusterCreate', cluster => console.info(`Cluster #${cluster.id} has been created`))
 clusterManager.on('ready', manager => console.info(`Manager with clusters (${manager.clusters}) is ready`))
+clusterManager.on('clusterCreate', cluster => console.info(`Cluster #${cluster.id} has been created`))
 
-clusterManager.spawn()
+clusterManager.register()
 ```
 
 `src/client.ts`
@@ -181,4 +166,4 @@ _**Note**: The ClusterBroker must be started before `ClusterManager` is initiali
 
 # License
 
-This project is licensed under the [MIT License](https://github.com/LacunaHub/lavaluna.js/blob/master/LICENSE).
+This project is licensed under the [MIT License](./LICENSE).
