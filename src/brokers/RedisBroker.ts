@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events'
-import { Redis, RedisOptions } from 'ioredis'
-import { IPCBaseMessage } from '../ipc/IPCMessage'
+import { Redis } from 'ioredis'
+import { BrokerMessage } from '../structures/BrokerMessage'
 
 export class RedisBroker extends EventEmitter<RedisBrokerEvents> {
     public pub: Redis
@@ -8,26 +8,21 @@ export class RedisBroker extends EventEmitter<RedisBrokerEvents> {
 
     private subscriptions = new Set<string>()
 
-    constructor(public readonly options: RedisOptions | string) {
+    constructor(public readonly redisURI: string) {
         super()
 
-        if (typeof options === 'string') {
-            this.pub = new Redis(options, { lazyConnect: true })
-            this.sub = new Redis(options, { lazyConnect: true })
-        } else {
-            this.pub = new Redis({ ...options, lazyConnect: true })
-            this.sub = new Redis({ ...options, lazyConnect: true })
-        }
+        this.pub = new Redis(redisURI, { lazyConnect: true })
+        this.sub = new Redis(redisURI, { lazyConnect: true })
 
         this.pub.on('error', error => this.emit('error', error))
         this.sub.on('error', error => this.emit('error', error))
 
         this.sub.on('message', (channel, message) => {
             try {
-                const data = JSON.parse(message) as IPCBaseMessage
+                const data = JSON.parse(message) as BrokerMessage
                 this.emit('message', channel, data)
             } catch {
-                this.emit('error', new Error(`Failed to parse message from ${channel}`))
+                this.emit('error', new Error(`Failed to parse message from "${channel}"`))
             }
         })
     }
@@ -37,9 +32,9 @@ export class RedisBroker extends EventEmitter<RedisBrokerEvents> {
         this.emit('ready')
     }
 
-    public disconnect(): void {
-        this.sub.disconnect()
-        this.pub.disconnect()
+    public async disconnect(): Promise<void> {
+        await Promise.all([this.pub.quit(), this.sub.quit()])
+        this.emit('disconnect')
     }
 
     public async subscribe(channel: string): Promise<void> {
@@ -56,26 +51,23 @@ export class RedisBroker extends EventEmitter<RedisBrokerEvents> {
         this.subscriptions.delete(channel)
     }
 
-    public async publish(channel: string, message: IPCBaseMessage): Promise<void> {
-        await this.pub.publish(channel, JSON.stringify(message))
+    public publish(channel: string, message: BrokerMessage): Promise<number> {
+        return this.pub.publish(channel, JSON.stringify(message))
     }
 }
 
 export interface RedisBrokerEvents {
     ready: []
-    message: [channel: string, message: IPCBaseMessage]
+    message: [channel: string, message: BrokerMessage]
     error: [error: Error]
+    disconnect: []
 }
 
-export enum BrokerChannels {
-    ClusterBroker = 'letsfrag:cb',
+export enum RedisBrokerChannels {
+    ClusterBroker = 'letsfrag:cluster-broker',
     Broadcast = 'letsfrag:broadcast'
 }
 
-export function getClusterManagerChannel(id: string | number): string {
-    return `letsfrag:cm:${id}`
-}
-
-export function getClusterChannel(managerId: string | number, clusterId: number): string {
-    return `letsfrag:cluster:${managerId}:${clusterId}`
+export function getBrokerClientChannel(id: string): string {
+    return `letsfrag:broker-client:${id}`
 }

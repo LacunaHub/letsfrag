@@ -1,5 +1,5 @@
 import { Client, ClientOptions } from 'discord.js'
-import { ClusterShard } from './ClusterShard'
+import { ClusterContext } from './ClusterContext'
 
 /**
  * Extended Discord.js Client with built-in cluster shard management.
@@ -18,24 +18,24 @@ import { ClusterShard } from './ClusterShard'
  * client.login('your_token')
  * ```
  */
-export class ClusterShardClient extends Client {
+export class ClusterClient extends Client {
     /**
      * The cluster shard instance managing IPC communication and cluster operations.
      */
-    public clusterShard: ClusterShard<this>
+    public readonly cluster: ClusterContext<this>
 
     /**
      * @param options - Discord.js client options
      */
     constructor(options: ClientOptions) {
-        const info = ClusterShard.getInfo()
+        const info = ClusterContext.getInfo()
 
         super({
             ...options,
             shardCount: info.shardCount,
-            shards: info.shards
+            shards: info.shardsList
         })
 
-        this.clusterShard = new ClusterShard(this)
+        this.cluster = new ClusterContext(this)
     }
 }

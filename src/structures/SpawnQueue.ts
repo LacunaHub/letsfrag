@@ -4,32 +4,63 @@ import { sleep } from '../utils/Utils'
  * Queue for managing spawning of clusters with delays.
  */
 export class SpawnQueue {
+    private readonly items: SpawnQueueItem[] = []
+
     /**
      * Whether the queue is paused.
      */
-    public paused: boolean = false
+    public state: SpawnQueueState = SpawnQueueState.Empty
 
-    private readonly items: SpawnQueueItem[] = []
+    public get paused(): boolean {
+        return this.state === SpawnQueueState.Paused
+    }
 
     /**
      * @param options - Queue configuration options
      */
-    constructor(public options: SpawnQueueOptions = {}) {}
+    constructor(public readonly options: SpawnQueueOptions = {}) {}
 
     /**
      * Adds an item to the queue.
      * @param item - The item to add
      * @returns This queue instance
      */
-    public add(item: SpawnQueueItem): this {
+    public add(item: Omit<SpawnQueueItem, 'addedAt' | 'delay'> & { delay?: number }): this {
         const queueItem: SpawnQueueItem = {
             run: item.run,
             args: item.args,
-            time: Date.now(),
-            timeout: item.timeout ?? this.options.timeout ?? 0
+            addedAt: Date.now(),
+            delay: item.delay ?? this.options.delay ?? 0
         }
 
         this.items.push(queueItem)
+        return this
+    }
+
+    /**
+     * Starts processing the queue.
+     * @returns Promise that resolves when all items are processed
+     */
+    public async start(): Promise<this> {
+        this.state = SpawnQueueState.Running
+
+        while (this.items.length > 0) {
+            const delay = this.items[0].delay
+
+            await this.next()
+            if (delay && !this.paused) await sleep(delay)
+        }
+
+        this.state = SpawnQueueState.Empty
+        return this
+    }
+
+    /**
+     * Pauses the queue.
+     * @returns This queue instance
+     */
+    public pause(): this {
+        this.state = SpawnQueueState.Paused
         return this
     }
 
@@ -38,66 +69,16 @@ export class SpawnQueue {
      * @returns Promise that resolves with the result of the item's run function
      */
     public async next(): Promise<unknown> {
-        if (this.paused) return undefined
+        if (this.paused) return null
 
         const item = this.items.shift()
-        return item ? item.run(item) : undefined
+        return item ? item.run(...item.args) : null
     }
 
-    /**
-     * Starts processing the queue.
-     * @returns Promise that resolves when all items are processed
-     */
-    public start(): Promise<this> {
-        if (this.options.auto) return this.waitForCompletion()
-        return this.processItems()
-    }
-
-    /**
-     * Pauses the queue.
-     * @returns This queue instance
-     */
-    public stop(): this {
-        this.paused = true
-        return this
-    }
-
-    /**
-     * Resumes the queue.
-     * @returns This queue instance
-     */
-    public resume(): this {
-        this.paused = false
-        return this
-    }
-
-    /**
-     * Waits for the queue to be empty in auto mode.
-     * @returns Promise that resolves when the queue is empty
-     */
-    private waitForCompletion(): Promise<this> {
-        return new Promise(resolve => {
-            const interval = setInterval(() => {
-                if (this.items.length === 0) {
-                    clearInterval(interval)
-                    resolve(this)
-                }
-            }, 200)
-        })
-    }
-
-    /**
-     * Processes all items in the queue sequentially.
-     * @returns Promise that resolves when all items are processed
-     */
-    private async processItems(): Promise<this> {
-        while (this.items.length > 0) {
-            const timeout = this.items[0]?.timeout
-
-            await this.next()
-            if (timeout) await sleep(timeout)
-        }
-
+    public clear() {
+        this.pause()
+        this.items.splice(0, this.items.length)
+        this.state = SpawnQueueState.Empty
         return this
     }
 }
@@ -119,12 +100,12 @@ export interface SpawnQueueItem {
     /**
      * Timestamp when the item was added.
      */
-    time?: number
+    addedAt: number
 
     /**
      * Delay in milliseconds before processing the next item.
      */
-    timeout: number
+    delay: number
 }
 
 /**
@@ -132,12 +113,13 @@ export interface SpawnQueueItem {
  */
 export interface SpawnQueueOptions {
     /**
-     * Whether to automatically process items as they are added.
+     * Default delay in milliseconds between processing items.
      */
-    auto?: boolean
+    delay?: number
+}
 
-    /**
-     * Default timeout in milliseconds between processing items.
-     */
-    timeout?: number
+export enum SpawnQueueState {
+    Running = 1,
+    Paused,
+    Empty
 }
