@@ -1,6 +1,6 @@
 # About
 
-This package is inspired by [discord-hybrid-sharding](https://github.com/meister03/discord-hybrid-sharding) and allows you to scale your Discord bot across multiple hosts/machines using Redis PubSub for inter-process communication.
+Distributed sharding library for Discord.js bots with automatic shard assignment and rebalancing. This package is inspired by [discord-hybrid-sharding](https://github.com/meister03/discord-hybrid-sharding).
 
 ## Architecture Overview
 

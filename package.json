@@ -1,7 +1,7 @@
 {
   "name": "@lacunahub/letsfrag",
   "version": "2.0.0",
-  "description": "Scale your Discord bot across multiple machines.",
+  "description": "Distributed Discord bot sharding with Redis-based orchestration",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -21,10 +21,12 @@
     "url": "git+https://github.com/LacunaHub/letsfrag.git"
   },
   "keywords": [
-    "shard",
-    "sharding",
     "discord",
-    "bot"
+    "sharding",
+    "distributed",
+    "redis",
+    "clustering",
+    "scalability"
   ],
   "author": "Lacuna (https://github.com/LacunaHub)",
   "license": "MIT",
