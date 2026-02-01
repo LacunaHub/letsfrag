@@ -52,6 +52,11 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
     private heartbeatInterval: NodeJS.Timeout
 
     /**
+     * Whether the client is currently disconnecting or already disconnected
+     */
+    private disconnecting = false
+
+    /**
      * Creates a new BrokerClient instance
      *
      * @param manager - The cluster manager instance, or null for standalone clients
@@ -107,8 +112,10 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
             }
         })
 
-        const shutdownSignals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK', 'beforeExit']
-        for (const signal of shutdownSignals) process.on(signal, () => this.disconnect())
+        const shutdown = () => this.disconnect().then(() => process.exit(0))
+        process.once('SIGINT', shutdown)
+        process.once('SIGTERM', shutdown)
+        process.once('SIGHUP', shutdown)
     }
 
     /**
@@ -130,15 +137,15 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
 
         this.emit('ready')
         this.heartbeatInterval = setInterval(async () => {
-            if (this.manager) {
-                const systemResources = await this.manager.getSystemResources()
-                const clusterStats = [...this.manager.clusters.values()].filter(v => v.stats).map(v => v.stats)
+            if (this.disconnecting || !this.manager) return
 
-                await this.send({
-                    type: BrokerMessageType.ClusterManagerHeartbeat,
-                    data: { id: this.id, ...systemResources, clusters: clusterStats }
-                })
-            }
+            const systemResources = await this.manager.getSystemResources()
+            const clusterStats = [...this.manager.clusters.values()].filter(v => v.stats).map(v => v.stats)
+
+            await this.send({
+                type: BrokerMessageType.ClusterManagerHeartbeat,
+                data: { id: this.id, ...systemResources, clusters: clusterStats }
+            })
         }, this.options.heartbeatInterval || 15_000)
 
         return this
@@ -148,16 +155,19 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
      * Disconnects the broker client from Redis.
      * Stops the heartbeat and sends a disconnect notification to the cluster broker.
      *
-     * @fires BrokerClient#close
+     * @fires BrokerClient#disconnect
      */
     public async disconnect(): Promise<void> {
+        if (this.disconnecting) return
+        this.disconnecting = true
+
         try {
             clearInterval(this.heartbeatInterval)
             await this.send({ type: BrokerMessageType.BrokerClientDisconnect, data: { id: this.id } })
-            this.broker.disconnect()
+            await this.broker.disconnect()
             this.emit('disconnect')
-        } catch (err) {
-            this.emit('error', err)
+        } catch {
+            // Ignore errors during shutdown
         }
     }
 
