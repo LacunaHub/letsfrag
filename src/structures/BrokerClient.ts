@@ -19,8 +19,7 @@ import { SpawnQueueState } from './SpawnQueue'
  * @example
  * ```typescript
  * const client = new BrokerClient(manager, {
- *   redis: 'redis://localhost:6379',
- *   type: 'bot'
+ *   redisURI: 'redis://localhost:6379'
  * })
  *
  * await client.connect()
@@ -32,6 +31,9 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
      */
     public readonly id: string
 
+    /**
+     * The dedicated Redis channel for this client (letsfrag:broker-client:{id})
+     */
     public readonly channel: string
 
     /**
@@ -39,8 +41,14 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
      */
     public readonly broker: RedisBroker
 
+    /**
+     * Manager for request-response patterns using nonces
+     */
     public readonly promises = new PromiseManager()
 
+    /**
+     * Timer for periodic heartbeat messages to the broker
+     */
     private heartbeatInterval: NodeJS.Timeout
 
     /**
@@ -156,7 +164,8 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
     /**
      * Sends a one-way message to the cluster broker without expecting a response.
      *
-     * @param message - The broker message to send
+     * @param payload - The broker message payload to send
+     * @returns The number of subscribers that received the message
      */
     public send(payload: BrokerMessagePayloadWithoutFrom): Promise<number> {
         return this.broker.publish(
@@ -165,6 +174,15 @@ export class BrokerClient extends EventEmitter<BrokerClientEvents> {
         )
     }
 
+    /**
+     * Sends a request to the cluster broker and waits for a response.
+     * Uses nonce-based correlation for matching requests to responses.
+     *
+     * @param payload - The broker message payload to send
+     * @param options - Request options
+     * @param options.timeout - Timeout in milliseconds (default: 30000)
+     * @returns The response data from the broker
+     */
     public async request(payload: BrokerMessagePayloadWithoutFrom, options: { timeout?: number } = {}) {
         const { timeout = 30_000 } = options
         const message = createBrokerMessage({ from: this.channel, ...payload })
@@ -186,7 +204,8 @@ export interface BrokerClientEvents {
     ready: []
 
     /**
-     * Emitted when an error occurs */
+     * Emitted when an error occurs
+     */
     error: [error: Error]
 
     /**
@@ -214,13 +233,18 @@ export interface BrokerClientOptions {
      */
     type?: BrokerClientType
 
+    /**
+     * Interval in milliseconds between heartbeat messages (default: 15000)
+     */
     heartbeatInterval?: number
 }
 
 /**
- * Type of broker client
+ * Type of broker client for identification purposes
  */
 export enum BrokerClientType {
+    /** Standard Discord bot manager */
     Bot = 1,
+    /** Custom client for monitoring or external integrations */
     Custom
 }

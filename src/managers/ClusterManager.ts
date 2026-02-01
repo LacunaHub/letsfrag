@@ -13,7 +13,17 @@ import { chunkArray, serializeScript } from '../utils/Utils'
 import { PromiseManager } from './PromiseManager'
 
 /**
- * Manages multiple cluster instances.
+ * ClusterManager handles the lifecycle of cluster child processes on a single machine.
+ * It receives shard assignments from the ClusterBroker via Redis and spawns clusters accordingly.
+ *
+ * @example
+ * ```typescript
+ * const manager = new ClusterManager('./bot.js', {
+ *   brokerClient: { redisURI: 'redis://localhost:6379' }
+ * })
+ *
+ * await manager.register()
+ * ```
  */
 export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
     /**
@@ -38,17 +48,29 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
      */
     public readonly clusters = new WishMap<number, Cluster>()
 
+    /**
+     * Total number of clusters managed by this instance
+     */
     public clusterCount: number
 
+    /**
+     * List of cluster IDs managed by this instance
+     */
     public clusterList: number[] = []
 
+    /**
+     * Starting cluster ID offset assigned by the broker
+     */
     public firstClusterId: number
 
     /**
-     * Total number of shards.
+     * Total number of shards across all managers (assigned by broker)
      */
     public shardCount: number
 
+    /**
+     * Number of shards per cluster (calculated during spawn)
+     */
     public shardsPerCluster: number
 
     /**
@@ -57,15 +79,31 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
     public shardList: number[] = []
 
     /**
-     * Promise manager.
+     * Manager for request-response patterns using nonces
      */
     public readonly promises = new PromiseManager()
+
+    /**
+     * Queue for sequential cluster spawning with configurable delay
+     */
     public readonly spawnQueue: SpawnQueue
 
+    /**
+     * Timer for periodic cluster health checks
+     */
     private healthcheckInterval: NodeJS.Timeout
 
+    /**
+     * OS utilities for gathering system resource information
+     */
     private readonly os = new OSUtils()
 
+    /**
+     * Creates a new ClusterManager instance
+     *
+     * @param file - Path to the bot script file (absolute or relative to cwd)
+     * @param options - Configuration options for the manager
+     */
     constructor(
         public file: string,
         public options: ClusterManagerOptions
@@ -98,6 +136,12 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
         })
     }
 
+    /**
+     * Connects to the broker and registers this manager for shard assignments.
+     * Must be called before the manager can receive shards and spawn clusters.
+     *
+     * @fires ClusterManager#register
+     */
     public async register() {
         await this.brokerClient.connect()
         const systemResources = await this.getSystemResources()
@@ -271,6 +315,12 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
         return { result, error }
     }
 
+    /**
+     * Gathers current system resource information (CPU, memory, uptime).
+     * Used for broker registration and heartbeat messages.
+     *
+     * @returns System resource metrics
+     */
     public async getSystemResources(): Promise<SystemResources> {
         const coreCount = await this.os.cpu.coreCount()
         const cpuUsage = await this.os.cpu.usage()
@@ -287,6 +337,12 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
         }
     }
 
+    /**
+     * Calculates optimal cluster count based on system resources and strategy.
+     * Takes into account CPU cores, available memory, and shard distribution.
+     *
+     * @returns Optimal number of clusters for this machine
+     */
     private async calculateClusterCount(): Promise<number> {
         if (!this.shardCount || this.shardCount < 1) return 0
         const {
@@ -311,6 +367,10 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
         return optimal
     }
 
+    /**
+     * Sets up periodic health checks for cluster processes.
+     * Respawns clusters that haven't sent heartbeats within the threshold.
+     */
     private setupHealthcheck() {
         const intervalMS = this.options.healthcheckInterval || 30_000
 
@@ -353,10 +413,13 @@ export interface ClusterManagerEvents {
      */
     error: [error: Error]
 
+    /**
+     * Emitted when the manager successfully registers with the broker
+     */
     register: []
 
     /**
-     * Emitted when a cluster is created.
+     * Emitted when a cluster is created
      */
     clusterCreate: [cluster: Cluster]
 
@@ -375,6 +438,9 @@ export interface ClusterManagerEvents {
      */
     clusterTimeout: [cluster: Cluster]
 
+    /**
+     * Emitted when a cluster fails health checks and will be respawned
+     */
     clusterUnhealthy: [cluster: Cluster]
 }
 
@@ -422,18 +488,41 @@ export interface ClusterManagerOptions {
      */
     spawnTimeout?: number
 
+    /**
+     * Interval in milliseconds between cluster health checks (default: 30000)
+     */
     healthcheckInterval?: number
 }
 
+/**
+ * Configuration for automatic cluster count calculation
+ */
 export interface ClusterManagerOptionsClusterCountCalc {
+    /**
+     * Strategy for calculating optimal cluster count
+     */
     strategy?: ClusterManagerOptionsClusterCountCalcStrategy
+
+    /**
+     * Estimated memory usage per cluster in MB (default: 500)
+     */
     memoryPerClusterMB?: number
+
+    /**
+     * Maximum shards allowed per cluster (default: 8)
+     */
     maxShardsPerCluster?: number
 }
 
+/**
+ * Strategies for automatic cluster count calculation
+ */
 export enum ClusterManagerOptionsClusterCountCalcStrategy {
+    /** Balance between CPU cores and available memory */
     Auto = 1,
+    /** Base cluster count on available CPU cores */
     CPUCores,
+    /** Base cluster count on available memory */
     Memory
 }
 
@@ -451,11 +540,14 @@ export interface RespawnClustersOptions {
      */
     spawnTimeout?: number
 
+    /**
+     * Specific cluster IDs to respawn (if empty, respawns all clusters)
+     */
     clusterIds?: number[]
 }
 
 /**
- * Options for evaluating scripts on clusters.
+ * Options for evaluating scripts on clusters
  */
 export interface EvalOptions<T extends object = object> {
     /**
@@ -479,14 +571,32 @@ export interface EvalOptions<T extends object = object> {
     timeout?: number
 }
 
+/**
+ * System resource metrics for a machine
+ */
 export interface SystemResources {
+    /**
+     * Number of physical CPU cores
+     */
     cpuCores: number
+
+    /**
+     * Current CPU usage percentage (0-100)
+     */
     cpuUsage: number
 
     /**
-     * In MB
+     * Total system memory in MB
      */
     memoryTotal: number
+
+    /**
+     * Current memory usage percentage (0-100)
+     */
     memoryUsage: number
+
+    /**
+     * System uptime in seconds
+     */
     uptime: number
 }

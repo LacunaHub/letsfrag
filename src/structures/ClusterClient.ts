@@ -8,10 +8,10 @@ import { ClusterContext } from './ClusterContext'
  *
  * @example
  * ```typescript
- * import { ClusterShardClient } from '@lacunahub/letsfrag'
+ * import { ClusterClient } from '@lacunahub/letsfrag'
  * import { GatewayIntentBits } from 'discord.js'
  *
- * const client = new ClusterShardClient({
+ * const client = new ClusterClient({
  *     intents: [GatewayIntentBits.Guilds]
  * })
  *
