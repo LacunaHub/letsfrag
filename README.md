@@ -152,17 +152,15 @@ clusterManager.register()
 `src/client.ts`
 
 ```ts
-import { ClusterShardClient } from '@lacunahub/letsfrag'
+import { ClusterClient } from '@lacunahub/letsfrag'
 import { GatewayIntentBits } from 'discord.js'
 
-const client = new ClusterShardClient({
+const client = new ClusterClient({
     intents: [GatewayIntentBits.Guilds]
 })
 
 client.login()
 ```
-
-_**Note**: The ClusterBroker must be started before `ClusterManager` is initialized on each host._
 
 # License
 
