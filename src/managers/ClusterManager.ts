@@ -1,34 +1,42 @@
+import { WishMap } from '@danliyev/wishmap'
 import { ForkOptions } from 'child_process'
 import EventEmitter from 'events'
-import fs from 'fs'
-import os from 'os'
-import path from 'path'
-import { IPCMessage, IPCRawMessage } from '../ipc/IPCMessage'
+import { statSync } from 'fs'
+import { OSUtils } from 'node-os-utils'
+import { isAbsolute, resolve } from 'path'
 import { BrokerClient, BrokerClientOptions } from '../structures/BrokerClient'
+import { BrokerMessageType } from '../structures/BrokerMessage'
 import { Cluster } from '../structures/Cluster'
-import { Fork } from '../structures/Fork'
+import { IPCMessage } from '../structures/IPCMessage'
 import { SpawnQueue } from '../structures/SpawnQueue'
-import { chunkArray, serializeScript, sleep } from '../utils/Utils'
+import { chunkArray, serializeScript } from '../utils/Utils'
 import { PromiseManager } from './PromiseManager'
 
 /**
- * Manages multiple cluster instances.
+ * ClusterManager handles the lifecycle of cluster child processes on a single machine.
+ * It receives shard assignments from the ClusterBroker via Redis and spawns clusters accordingly.
+ *
+ * @example
+ * ```typescript
+ * const manager = new ClusterManager('./bot.js', {
+ *   brokerClient: { redisURI: 'redis://localhost:6379' }
+ * })
+ *
+ * await manager.register()
+ * ```
  */
 export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
     /**
-     * Map of cluster instances.
-     */
-    public readonly cache = new Map<number, Cluster>()
-
-    /**
-     * Promise manager.
-     */
-    public readonly promises = new PromiseManager()
-
-    /**
      * Time the manager was ready.
      */
-    public readyAt: number = -1
+    public readyAt: number
+
+    /**
+     * Whether the manager is ready.
+     */
+    public get ready(): boolean {
+        return this.readyAt > 0
+    }
 
     /**
      * Broker client.
@@ -36,121 +44,153 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
     public brokerClient: BrokerClient
 
     /**
-     * Total number of shards.
+     * Map of cluster instances.
+     */
+    public readonly clusters = new WishMap<number, Cluster>()
+
+    /**
+     * Total number of clusters managed by this instance
+     */
+    public clusterCount: number
+
+    /**
+     * List of cluster IDs managed by this instance
+     */
+    public clusterList: number[] = []
+
+    /**
+     * Starting cluster ID offset assigned by the broker
+     */
+    public firstClusterId: number
+
+    /**
+     * Total number of shards across all managers (assigned by broker)
      */
     public shardCount: number
 
     /**
+     * Number of shards per cluster (calculated during spawn)
+     */
+    public shardsPerCluster: number
+
+    /**
      * List of shards that this manager handles.
      */
-    public shards: number[] = []
+    public shardList: number[] = []
 
     /**
-     * List of clusters that this manager handles.
+     * Manager for request-response patterns using nonces
      */
-    public clusters: number[] = []
+    public readonly promises = new PromiseManager()
 
     /**
-     * Spawn queue.
+     * Queue for sequential cluster spawning with configurable delay
      */
-    public spawnQueue: SpawnQueue
+    public readonly spawnQueue: SpawnQueue
 
     /**
-     * Whether the manager is ready.
+     * Timer for periodic cluster health checks
      */
-    public get ready(): boolean {
-        return this.readyAt > -1
-    }
+    private healthcheckInterval: NodeJS.Timeout
 
-    constructor(public file: string, public options: ClusterManagerOptions) {
+    /**
+     * OS utilities for gathering system resource information
+     */
+    private readonly os = new OSUtils()
+
+    /**
+     * Creates a new ClusterManager instance
+     *
+     * @param file - Path to the bot script file (absolute or relative to cwd)
+     * @param options - Configuration options for the manager
+     */
+    constructor(
+        public file: string,
+        public options: ClusterManagerOptions
+    ) {
         if (!file) throw new TypeError('[ClusterManager] "file" is required.')
 
         super()
 
-        this.file = path.isAbsolute(file) ? file : path.resolve(process.cwd(), file)
-        if (!fs.statSync(this.file).isFile()) throw new TypeError(`[ClusterManager] "${file}" is not a file.`)
+        this.file = isAbsolute(file) ? file : resolve(process.cwd(), file)
+        if (!statSync(this.file).isFile()) throw new TypeError(`[ClusterManager] "${file}" is not a file.`)
 
         this.brokerClient = new BrokerClient(this, options.brokerClient)
 
-        this.options.clusterCount = +options.clusterCount || -1
-        this.options.shardsPerCluster = +options.shardsPerCluster || -1
         this.options.spawnDelay = +options.spawnDelay || 10_000
-        this.options.spawnTimeout = +options.spawnTimeout || -1
+        this.options.spawnTimeout = +options.spawnTimeout || 60_000
 
-        this.spawnQueue = new SpawnQueue({ auto: !!this.options.queueAutoSpawn, timeout: this.options.queueTimeout })
+        this.spawnQueue = new SpawnQueue({ delay: this.options.spawnDelay })
+
+        this.on('ready', () => {
+            this.brokerClient.send({
+                type: BrokerMessageType.ClusterManagerReady,
+                data: {
+                    id: this.brokerClient.id,
+                    clusterCount: this.clusterCount,
+                    shardList: this.shardList
+                }
+            })
+
+            this.setupHealthcheck()
+        })
+    }
+
+    /**
+     * Connects to the broker and registers this manager for shard assignments.
+     * Must be called before the manager can receive shards and spawn clusters.
+     *
+     * @fires ClusterManager#register
+     */
+    public async register() {
+        await this.brokerClient.connect()
+        const systemResources = await this.getSystemResources()
+        await this.brokerClient.send({
+            type: BrokerMessageType.ClusterManagerRegister,
+            data: {
+                id: this.brokerClient.id,
+                ...systemResources
+            }
+        })
+        this.emit('register')
     }
 
     /**
      * Initializes the manager and spawns clusters.
      */
-    public async spawn(): Promise<SpawnQueue> {
+    public async spawnClusters(): Promise<this> {
         if (this.options.spawnDelay < 8000) {
             process.emitWarning(
                 '[ClusterManager#spawn] Spawn delay is smaller than 8s, this can cause global rate limits on /gateway/bot'
             )
         }
 
-        await this.brokerClient.connect()
+        this.clusterCount = Number(this.options.clusterCount) || (await this.calculateClusterCount())
+        this.shardsPerCluster = Math.ceil(this.shardList.length / this.clusterCount)
+        if (this.shardList.length / this.shardsPerCluster !== this.clusterCount)
+            this.clusterCount = Math.ceil(this.shardList.length / this.shardsPerCluster)
 
-        const shardingData = await this.brokerClient.getShardingData()
-        this.shardCount = shardingData.shardCount
-        this.shards = shardingData.shards
-        const clusterShardCount = this.shards.length
+        if (this.clusterCount > this.shardList.length)
+            throw new Error('[ClusterManager#spawn] "clusterCount" cannot be more than shards.')
+        if (this.shardsPerCluster > this.shardList.length)
+            throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be less than shards.')
+        if (this.shardsPerCluster < 1) throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be at least 1.')
 
-        if (this.options.clusterCount === -1) {
-            const cpuCores = os.cpus().length
-            this.options.clusterCount = cpuCores > clusterShardCount ? clusterShardCount : cpuCores
-        }
+        const shards: number[][] = chunkArray(this.shardList, this.shardsPerCluster)
+        if (shards.length !== this.clusterCount) this.clusterCount = shards.length
+        this.clusterList = shards.map((v, i) => i)
 
-        if (this.options.shardsPerCluster === -1) {
-            this.options.shardsPerCluster = Math.ceil(clusterShardCount / this.options.clusterCount)
-        }
-
-        if (clusterShardCount / this.options.shardsPerCluster !== this.options.clusterCount) {
-            this.options.clusterCount = Math.ceil(clusterShardCount / this.options.shardsPerCluster)
-        }
-
-        if (this.options.clusterCount > clusterShardCount)
-            throw new Error('[ClusterManager#spawn] "clusterCount" cannot be more than "shardCount".')
-        if (this.options.shardsPerCluster > clusterShardCount)
-            throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be less than "shardCount".')
-        if (this.options.shardsPerCluster < 1)
-            throw new Error('[ClusterManager#spawn] "shardsPerCluster" must be at least 1.')
-
-        const shards = chunkArray(this.shards, this.options.shardsPerCluster)
-
-        if (shards.length !== this.options.clusterCount) {
-            this.options.clusterCount = shards.length
-        }
-
-        const clusteringData = await this.brokerClient.getClusteringData(this.options.clusterCount)
-        this.clusters = clusteringData.clusters
-
-        if (this.shards.some(shard => shard < 0))
-            throw new Error('[ClusterManager#spawn] Shard identifier cannot be less than 0.')
-        if (this.clusters.some(cluster => cluster < 0))
-            throw new Error('[ClusterManager#spawn] Cluster identifier cannot be less than 0.')
-
-        for (const clusterId of this.clusters) {
-            const index = this.clusters.indexOf(clusterId)
-            const clusterShards = shards[index]
-
-            if (!clusterShards) continue
-
-            const timeout = this.options.spawnDelay * clusterShards.length
-            const spawnTimeout =
-                this.options.spawnTimeout !== -1
-                    ? this.options.spawnTimeout + this.options.spawnDelay * clusterShards.length
-                    : this.options.spawnTimeout
+        for (let i = 0; i < this.clusterList.length; i++) {
+            const clusterShards = shards[i]
 
             this.spawnQueue.add({
-                timeout,
-                args: [spawnTimeout],
-                run: (...timeoutArgs: number[]) => this.createCluster(clusterId, clusterShards).spawn(...timeoutArgs)
+                run: (timeout: number) => this.createCluster(i + this.firstClusterId, clusterShards).spawn(timeout),
+                args: [this.options.spawnTimeout]
             })
         }
 
-        return this.spawnQueue.start()
+        await this.spawnQueue.start()
+        return this
     }
 
     /**
@@ -161,7 +201,7 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
     public createCluster(id: number, shards: number[]): Cluster {
         const cluster = new Cluster(this, id, shards)
 
-        this.cache.set(id, cluster)
+        this.clusters.set(id, cluster)
         this.emit('clusterCreate', cluster)
 
         return cluster
@@ -171,39 +211,42 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
      * Respawns all clusters.
      * @param options - Respawn options
      */
-    public async respawnClusters(options: RespawnOptions = {}): Promise<Map<number, Cluster>> {
-        const spawnDelay = options.spawnDelay ?? this.options.spawnDelay
-        const shardSpawnDelay = options.shardSpawnDelay ?? this.options.spawnDelay
-        const shardSpawnTimeout = options.shardSpawnTimeout ?? this.options.spawnTimeout
+    public async respawnClusters(options: RespawnClustersOptions = {}): Promise<this> {
+        const {
+            spawnDelay = this.options.spawnDelay,
+            spawnTimeout = this.options.spawnTimeout,
+            clusterIds = []
+        } = options
 
         this.promises.cache.clear()
 
-        const shards = chunkArray(this.shards || [], this.options.shardsPerCluster || this.shardCount)
-        const clusters = [...this.cache.values()]
-        const promises: Promise<Fork | void>[] = []
+        if (clusterIds.length) {
+            const clusters = this.clusters.filter(v => (clusterIds.length ? clusterIds.includes(v.id) : true))
 
-        for (let i = 0; i < clusters.length; i++) {
-            const cluster = clusters[i]
-            const shardCount = shards[i]?.length || this.shardCount / this.options.clusterCount
-
-            promises.push(cluster.respawn(shardSpawnDelay, shardSpawnTimeout))
-
-            if (i < clusters.length - 1 && spawnDelay > 0) {
-                promises.push(sleep(shardCount * spawnDelay))
+            for (const [, cluster] of clusters) {
+                this.spawnQueue.add({
+                    run: (timeout: number) => cluster.respawn(timeout),
+                    args: [spawnTimeout],
+                    delay: spawnDelay
+                })
             }
+
+            await this.spawnQueue.start()
+        } else {
+            for (const [, cluster] of this.clusters) cluster.kill()
+            this.clusters.clear()
+            await this.spawnClusters()
         }
 
-        await Promise.allSettled(promises)
-        return this.cache
+        return this
     }
 
     /**
      * Broadcasts a message to all clusters.
      * @param message - Message to broadcast
      */
-    public broadcast(message: IPCRawMessage): Promise<void[]> {
-        const clusters = [...this.cache.values()]
-        return Promise.all(clusters.map(cluster => cluster.send(message)))
+    public broadcast(message: IPCMessage): Promise<void[]> {
+        return Promise.all(this.clusters.map(cluster => cluster.send(message)))
     }
 
     /**
@@ -215,37 +258,37 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
         script: string | ((manager: ClusterManager) => T),
         options: EvalOptions = {}
     ): Promise<T> {
-        if (!this.cache.size) throw new Error('[ClusterManager#broadcastEval] No clusters found.')
+        if (!this.clusters.size) throw new Error('[ClusterManager#broadcastEval] No clusters found.')
         if (typeof script !== 'function' && typeof script !== 'string')
             throw new TypeError('[ClusterManager#broadcastEval] "script" must be a function or a string.')
 
         const serializedScript = serializeScript(script, options.context)
-        let targetClusters = [...this.cache.values()]
+        let targetClusters = [...this.clusters.values()]
 
-        if (Array.isArray(options.shards)) {
-            if (options.shards.some(v => v < 0) || !options.shards.every(v => this.shards.includes(v)))
+        if (Array.isArray(options.shardList)) {
+            if (options.shardList.some(v => v < 0) || !options.shardList.every(v => this.shardList.includes(v)))
                 throw new Error('[ClusterManager#broadcastEval] Invalid shards.')
 
             const clusterIds = new Set<number>()
-            for (const cluster of this.cache.values()) {
-                if (cluster.shards.some(v => options.shards.includes(v))) clusterIds.add(cluster.id)
+            for (const [, cluster] of this.clusters) {
+                if (cluster.shardList.some(v => options.shardList.includes(v))) clusterIds.add(cluster.id)
             }
 
             if (!clusterIds.size) throw new Error('[ClusterManager#broadcastEval] No clusters found.')
-            options.clusters = Array.from(clusterIds)
+            options.clusterList = Array.from(clusterIds)
         }
 
-        if (Array.isArray(options.clusters)) {
-            if (options.clusters.some(v => v < 0) || !options.clusters.every(v => this.cache.has(v)))
+        if (Array.isArray(options.clusterList)) {
+            if (options.clusterList.some(v => v < 0) || !options.clusterList.every(v => this.clusters.has(v)))
                 throw new Error('[ClusterManager#broadcastEval] Invalid clusters.')
 
-            targetClusters = targetClusters.filter(v => options.clusters.includes(v.id))
+            targetClusters = targetClusters.filter(v => options.clusterList.includes(v.id))
             if (!targetClusters.length) throw new Error('[ClusterManager#broadcastEval] No clusters found.')
         }
 
         const promises = targetClusters.map(cluster => cluster.evalOnShard(serializedScript, options))
-
         const results = (await Promise.allSettled(promises)) as PromiseFulfilledResult<any>[]
+
         return results.filter(r => r.status === 'fulfilled').map(r => r.value) as T
     }
 
@@ -271,6 +314,89 @@ export class ClusterManager extends EventEmitter<ClusterManagerEvents> {
 
         return { result, error }
     }
+
+    /**
+     * Gathers current system resource information (CPU, memory, uptime).
+     * Used for broker registration and heartbeat messages.
+     *
+     * @returns System resource metrics
+     */
+    public async getSystemResources(): Promise<SystemResources> {
+        const coreCount = await this.os.cpu.coreCount()
+        const cpuUsage = await this.os.cpu.usage()
+        const memoryTotal = await this.os.memory.total()
+        const memoryUsed = await this.os.memory.usage()
+        const uptime = await this.os.system.uptime()
+
+        return {
+            cpuCores: coreCount.success ? coreCount.data.physical : 0,
+            cpuUsage: cpuUsage.success ? cpuUsage.data : 0,
+            memoryTotal: memoryTotal.success ? memoryTotal.data.toMB() : 0,
+            memoryUsage: memoryUsed.success ? memoryUsed.data : 0,
+            uptime: uptime.success ? uptime.data.uptime : 0
+        }
+    }
+
+    /**
+     * Calculates optimal cluster count based on system resources and strategy.
+     * Takes into account CPU cores, available memory, and shard distribution.
+     *
+     * @returns Optimal number of clusters for this machine
+     */
+    private async calculateClusterCount(): Promise<number> {
+        if (!this.shardCount || this.shardCount < 1) return 0
+        const {
+            strategy = ClusterManagerOptionsClusterCountCalcStrategy.Auto,
+            memoryPerClusterMB = 500,
+            maxShardsPerCluster = 8
+        } = this.options.clusterCountCalc ?? {}
+
+        const systemResources = await this.getSystemResources()
+        const maxByCores = Math.max(1, systemResources.cpuCores)
+        const maxByMemory = Math.floor(systemResources.memoryTotal / memoryPerClusterMB)
+        const minByShards = Math.ceil(this.shardList.length / maxShardsPerCluster)
+
+        const optimalValues = [this.shardList.length]
+        if (strategy === ClusterManagerOptionsClusterCountCalcStrategy.CPUCores) optimalValues.push(maxByCores)
+        else if (strategy === ClusterManagerOptionsClusterCountCalcStrategy.Memory) optimalValues.push(maxByMemory)
+        else optimalValues.push(maxByCores, maxByMemory)
+
+        let optimal = Math.min(...optimalValues)
+        optimal = Math.max(optimal, minByShards, 1)
+
+        return optimal
+    }
+
+    /**
+     * Sets up periodic health checks for cluster processes.
+     * Respawns clusters that haven't sent heartbeats within the threshold.
+     */
+    private setupHealthcheck() {
+        const intervalMS = this.options.healthcheckInterval || 30_000
+
+        const clearHealthcheckInterval = () => {
+            if (!this.healthcheckInterval) return
+
+            clearInterval(this.healthcheckInterval)
+            this.healthcheckInterval = null
+        }
+
+        const healthcheck = async () => {
+            const unhealthyClusters = this.clusters.filter(
+                v => v.ready && Date.now() - v.stats?.lastHeartbeatAt > intervalMS * 10
+            )
+
+            if (!unhealthyClusters.length) return
+
+            for (const [, cluster] of unhealthyClusters) this.emit('clusterUnhealthy', cluster)
+            clearHealthcheckInterval()
+            await this.respawnClusters({ clusterIds: unhealthyClusters.map(v => v.id) })
+            this.setupHealthcheck()
+        }
+
+        clearHealthcheckInterval()
+        this.healthcheckInterval = setInterval(healthcheck.bind(this), intervalMS)
+    }
 }
 
 /**
@@ -283,22 +409,17 @@ export interface ClusterManagerEvents {
     ready: []
 
     /**
-     * Emitted when a message is received from a cluster.
-     */
-    message: [message: IPCMessage]
-
-    /**
      * Emitted when an error occurs.
      */
     error: [error: Error]
 
     /**
-     * Emitted when a client request is received.
+     * Emitted when the manager successfully registers with the broker
      */
-    clientRequest: [message: IPCMessage]
+    register: []
 
     /**
-     * Emitted when a cluster is created.
+     * Emitted when a cluster is created
      */
     clusterCreate: [cluster: Cluster]
 
@@ -316,6 +437,11 @@ export interface ClusterManagerEvents {
      * Emitted when a cluster spawn times out.
      */
     clusterTimeout: [cluster: Cluster]
+
+    /**
+     * Emitted when a cluster fails health checks and will be respawned
+     */
+    clusterUnhealthy: [cluster: Cluster]
 }
 
 /**
@@ -328,14 +454,19 @@ export interface ClusterManagerOptions {
     brokerClient: BrokerClientOptions
 
     /**
-     * Total number of clusters. Defaults to CPU core count.
+     * Node.js fork options for child processes.
+     */
+    childProcess?: ForkOptions
+
+    /**
+     * Total number of clusters.
      */
     clusterCount?: number
 
     /**
-     * Number of shards per cluster. Auto-calculated if not provided.
+     * Ignored if "clusterCount" is set
      */
-    shardsPerCluster?: number
+    clusterCountCalc?: ClusterManagerOptionsClusterCountCalc
 
     /**
      * Arguments to pass to shards.
@@ -348,64 +479,86 @@ export interface ClusterManagerOptions {
     execArgv?: any[]
 
     /**
-     * Delay in milliseconds before spawning next cluster. Defaults to 10000ms.
+     * Delay in milliseconds before spawning next cluster. Defaults to 10s.
      */
     spawnDelay?: number
 
     /**
-     * Spawn timeout for clusters in milliseconds.
+     * Spawn timeout for clusters in milliseconds. Defaults to 60s.
      */
     spawnTimeout?: number
 
     /**
-     * Whether to automatically spawn clusters in the queue.
+     * Interval in milliseconds between cluster health checks (default: 30000)
      */
-    queueAutoSpawn?: boolean
+    healthcheckInterval?: number
+}
+
+/**
+ * Configuration for automatic cluster count calculation
+ */
+export interface ClusterManagerOptionsClusterCountCalc {
+    /**
+     * Strategy for calculating optimal cluster count
+     */
+    strategy?: ClusterManagerOptionsClusterCountCalcStrategy
 
     /**
-     * Queue spawn timeout in milliseconds.
+     * Estimated memory usage per cluster in MB (default: 500)
      */
-    queueTimeout?: number
+    memoryPerClusterMB?: number
 
     /**
-     * Node.js fork options for child processes.
+     * Maximum shards allowed per cluster (default: 8)
      */
-    childProcess?: ForkOptions
+    maxShardsPerCluster?: number
+}
+
+/**
+ * Strategies for automatic cluster count calculation
+ */
+export enum ClusterManagerOptionsClusterCountCalcStrategy {
+    /** Balance between CPU cores and available memory */
+    Auto = 1,
+    /** Base cluster count on available CPU cores */
+    CPUCores,
+    /** Base cluster count on available memory */
+    Memory
 }
 
 /**
  * Options for respawning clusters.
  */
-export interface RespawnOptions {
+export interface RespawnClustersOptions {
     /**
      * Delay between cluster spawns in milliseconds.
      */
     spawnDelay?: number
 
     /**
-     * Delay between shard spawns in milliseconds.
-     */
-    shardSpawnDelay?: number
-
-    /**
      * Timeout for shard spawns in milliseconds.
      */
-    shardSpawnTimeout?: number
+    spawnTimeout?: number
+
+    /**
+     * Specific cluster IDs to respawn (if empty, respawns all clusters)
+     */
+    clusterIds?: number[]
 }
 
 /**
- * Options for evaluating scripts on clusters.
+ * Options for evaluating scripts on clusters
  */
 export interface EvalOptions<T extends object = object> {
     /**
      * Specific cluster IDs to evaluate on.
      */
-    clusters?: number[]
+    clusterList?: number[]
 
     /**
      * Specific shard IDs to evaluate on.
      */
-    shards?: number[]
+    shardList?: number[]
 
     /**
      * Context to pass to the evaluated script.
@@ -416,4 +569,34 @@ export interface EvalOptions<T extends object = object> {
      * Timeout for script evaluation in milliseconds.
      */
     timeout?: number
+}
+
+/**
+ * System resource metrics for a machine
+ */
+export interface SystemResources {
+    /**
+     * Number of physical CPU cores
+     */
+    cpuCores: number
+
+    /**
+     * Current CPU usage percentage (0-100)
+     */
+    cpuUsage: number
+
+    /**
+     * Total system memory in MB
+     */
+    memoryTotal: number
+
+    /**
+     * Current memory usage percentage (0-100)
+     */
+    memoryUsage: number
+
+    /**
+     * System uptime in seconds
+     */
+    uptime: number
 }
