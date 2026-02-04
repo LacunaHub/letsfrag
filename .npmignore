@@ -1,8 +1,0 @@
-.github/
-.vscode/
-docs/
-src/
-.gitignore
-.prettierrc
-.prettierignore
-tsconfig.json
