@@ -1,83 +1,123 @@
-import { ChildProcess } from 'child_process'
+import { makePlainError } from 'discord.js'
 import EventEmitter from 'events'
-import { Worker } from 'worker_threads'
-import { IPCHandler } from '../ipc/IPCHandler'
-import { IPCBaseMessage, IPCMessage, IPCMessageType, IPCRawMessage } from '../ipc/IPCMessage'
-import { ClusterManager, ClusterManagerMode, DebugMessage, EvalOptions } from '../managers/ClusterManager'
-import { sleep } from '../utils/Utils'
-import { ClusterShard } from './ClusterShard'
+import { ClusterManager, EvalOptions } from '../managers/ClusterManager'
+import { serializeScript } from '../utils/Utils'
+import { ClusterContext, ClusterContextStats } from './ClusterContext'
 import { Fork } from './Fork'
-import { Thread } from './Thread'
+import { createIPCMessage, IPCMessage, IPCMessagePayload, IPCMessageType } from './IPCMessage'
 
-export class Cluster extends EventEmitter {
+/**
+ * Represents a cluster that manages Discord bot shards.
+ */
+export class Cluster extends EventEmitter<ClusterEvents> {
     /**
-     * Time the cluster was ready.
+     * Timestamp when the cluster became ready, or -1 if not ready.
      */
-    public readyAt: number = -1
-
-    public thread: Fork | Thread | null = null
-
-    /**
-     * IPC handler.
-     */
-    public handler = new IPCHandler(this)
+    public readyAt: number
 
     /**
      * Whether the cluster is ready.
      */
     public get ready(): boolean {
-        return this.readyAt > -1
-    }
-
-    private data: ClusterEnv
-    private env: NodeJS.ProcessEnv & ClusterEnv
-
-    constructor(public readonly manager: ClusterManager, public id: number, public shards: number[]) {
-        if (!manager) throw new Error(`[Cluster] "manager" is required.`)
-        if (typeof id !== 'number') throw new Error(`[Cluster] "id" must be a number.`)
-        if (!Array.isArray(shards)) throw new Error(`[Cluster] "shards" must be an array.`)
-
-        super()
-
-        this.data = {
-            LF_CLUSTER_ID: this.id,
-            LF_CLUSTER_MANAGER_MODE: this.manager.options.mode,
-            LF_SHARD_COUNT: this.manager.shardCount,
-            LF_SHARDS: this.shards
-        }
-        this.env = Object.assign({}, process.env, this.data)
+        return this.readyAt > 0
     }
 
     /**
-     * Spawns the cluster.
-     * @param timeout Timeout in milliseconds.
+     * Child process for this cluster.
      */
-    public async spawn(timeout: number = 30_000): Promise<ChildProcess | Worker> {
-        if (this.thread) throw new Error(`[Cluster#spawn] Cluster with ID ${this.id} is already spawned.`)
-        if (!this.manager.file) throw new Error(`[Cluster#spawn] Cluster with ID ${this.id} is missing file.`)
+    public cp?: Fork
+
+    public stats?: ClusterStats
+
+    private env: NodeJS.ProcessEnv & ClusterEnv
+
+    /**
+     * @param manager The cluster manager.
+     * @param id The cluster ID.
+     * @param shardList Array of shard IDs assigned to this cluster.
+     */
+    constructor(
+        public readonly manager: ClusterManager,
+        public readonly id: number,
+        public readonly shardList: number[]
+    ) {
+        if (!manager) throw new Error(`[Cluster] "manager" is required.`)
+        if (typeof id !== 'number') throw new TypeError(`[Cluster] "id" must be a number.`)
+        if (!Array.isArray(shardList) || !shardList.every(v => typeof v === 'number'))
+            throw new TypeError(`[Cluster] "shardList" must be an array of numbers.`)
+
+        super()
+
+        this.env = Object.assign({}, process.env, {
+            LETSFRAG_CLUSTER_ID: String(this.id),
+            LETSFRAG_SHARD_COUNT: String(this.manager.shardCount),
+            LETSFRAG_SHARD_LIST: this.shardList.join(',')
+        })
+    }
+
+    /**
+     * Spawns the cluster child process and waits for it to become ready.
+     *
+     * @param timeout Timeout in milliseconds. Default is 30000ms (30 seconds).
+     * @returns The spawned Fork process.
+     */
+    public async spawn(timeout: number = this.manager.options.spawnTimeout): Promise<Fork> {
+        if (this.cp) throw new Error(`[Cluster#spawn] Cluster #${this.id} is already spawned.`)
+        if (!this.manager.file) throw new Error(`[Cluster#spawn] Cluster #${this.id} is missing a file.`)
 
         const args = [
                 ...(this.manager.options.shardArgs || []),
                 `--clusterId ${this.id}`,
-                `--shards [${this.shards.join(', ').trim()}]`
+                `--shards [${this.shardList.join(',').trim()}]`
             ],
             options = {
-                ...this.manager.options.cluster,
+                ...this.manager.options.childProcess,
                 execArgv: this.manager.options.execArgv,
                 env: this.env
             }
 
-        this.thread =
-            this.manager.options.mode === 'fork'
-                ? new Fork(this.manager.file, args, options)
-                : new Thread(this.manager.file, { ...options, workerData: this.data })
-
-        this.thread
+        this.cp = new Fork(this.manager.file, args, options)
+        this.cp
             .spawn()
-            .on('message', this.onThreadMessage.bind(this))
-            .on('error', this.onThreadError.bind(this))
-            .on('exit', this.onThreadExit.bind(this))
-        this.emit('spawn', this.thread.process)
+            .on('message', async (message: IPCMessage) => {
+                if (message.type === IPCMessageType.ClusterReady) {
+                    this.readyAt = Date.now()
+                    this.emit('ready')
+
+                    if (this.manager.clusters.size === this.manager.clusterCount) {
+                        this.manager.readyAt = Date.now()
+                        this.manager.emit('ready')
+                    }
+                } else if (message.type === IPCMessageType.ClusterRespawn) {
+                    await this.respawn()
+                } else if (message.type === IPCMessageType.ClusterContextHeartbeat) {
+                    this.stats = { ...message.data, lastHeartbeatAt: Date.now() }
+                } else if (message.type === IPCMessageType.ClusterContextEvalResult) {
+                    this.manager.promises.resolve(message.nonce, message)
+                } else if (message.type === IPCMessageType.BroadcastEval) {
+                    try {
+                        const results = await this.manager.broadcastEval(message.data.script, message.data.options)
+
+                        await this.send({
+                            type: IPCMessageType.BroadcastEvalResult,
+                            data: results,
+                            nonce: message.nonce
+                        })
+                    } catch (err) {
+                        await this.send({
+                            type: IPCMessageType.BroadcastEvalResult,
+                            error: makePlainError(err),
+                            nonce: message.nonce
+                        })
+                    }
+                }
+            })
+            .on('error', err => this.emit('error', err))
+            .on('exit', code => {
+                this.emit('death', this, this.cp)
+                this.kill()
+            })
+        this.emit('spawn', this.cp)
 
         const shouldAbort = timeout > 0 && timeout !== Infinity
 
@@ -97,13 +137,15 @@ export class Cluster extends EventEmitter {
             }
 
             const onDeath = () => {
+                this.manager.emit('clusterDeath', this)
                 cleanup()
-                reject(new Error(`[Cluster#spawn] Cluster ${this.id} died.`))
+                reject(new Error(`[Cluster#spawn] Cluster #${this.id} died.`))
             }
 
             const onTimeout = () => {
+                this.manager.emit('clusterTimeout', this)
                 cleanup()
-                reject(new Error(`[Cluster#spawn] Cluster ${this.id} took too long to get ready.`))
+                reject(new Error(`[Cluster#spawn] Cluster #${this.id} took too long to get ready.`))
             }
 
             const spawnTimeoutTimer = shouldAbort ? setTimeout(onTimeout, timeout) : -1
@@ -114,171 +156,128 @@ export class Cluster extends EventEmitter {
             if (!shouldAbort) resolve()
         })
 
-        return this.thread.process
+        return this.cp
     }
 
     /**
-     * Kills the cluster.
+     * Terminates the cluster child process and resets its state.
      */
     public kill(): void {
-        if (!this.thread) throw new Error(`[Cluster#kill] Cluster ${this.id} does not have a child process/worker.`)
-
-        this.thread.kill()
-        this.thread = null
-        this.readyAt = -1
-
-        this.manager.emit('debug', { from: 'Cluster#kill', data: this.id })
+        this.cp?.kill()
+        this.cp = null
+        this.readyAt = null
     }
 
     /**
-     * Respawns the cluster.
-     * @param delay Spawn delay in milliseconds.
-     * @param timeout Timeout in milliseconds.
+     * Kills and respawns the cluster with optional delay.
+     *
+     * @param timeout Timeout for the spawn operation in milliseconds. Defaults to manager's spawn timeout.
+     * @returns The newly spawned Fork process.
      */
-    public async respawn(
-        delay: number = this.manager.options.spawnDelay,
-        timeout: number = this.manager.options.spawnTimeout
-    ): Promise<ChildProcess | Worker> {
-        this.thread && this.kill()
-        delay > 0 && (await sleep(delay))
-
+    public respawn(timeout: number = this.manager.options.spawnTimeout): Promise<Fork> {
+        this.kill()
         return this.spawn(timeout)
     }
 
     /**
-     * Sends a message to the cluster.
-     * @param message IPC message.
+     * Sends a one-way message to the cluster child process.
+     *
+     * @param message IPC message to send.
+     * @returns Promise that resolves when the message is sent.
      */
-    public async send(message: IPCRawMessage): Promise<void> {
-        if (!this.thread) throw new Error(`[Cluster#send] Cluster ${this.id} does not have a child process/worker.`)
-
-        this.manager.emit('debug', { from: 'Cluster#send', data: arguments })
-
-        return this.thread.send({
-            ...new IPCBaseMessage(message),
-            type: IPCMessageType.CustomMessage
-        })
+    public send(payload: IPCMessagePayload): Promise<void> {
+        if (!this.cp) throw new Error(`[Cluster#send] Cluster #${this.id} is not spawned.`)
+        return this.cp.send(createIPCMessage(payload))
     }
 
     /**
-     * Sends a request to the cluster.
-     * @param message IPC message.
-     * @param timeout Timeout in milliseconds.
+     * Broadcasts a message to all clusters via the manager.
+     *
+     * @param message IPC message to broadcast.
+     * @returns Promise that resolves with an array of void promises for each cluster.
      */
-    public async request(message: IPCRawMessage, timeout?: number): Promise<any> {
-        if (!this.thread) throw new Error(`[Cluster#request] Cluster ${this.id} does not have a child process/worker.`)
-
-        const baseMessage = new IPCBaseMessage({
-            ...new IPCBaseMessage(message),
-            type: IPCMessageType.CustomRequest
-        })
-
-        await this.thread.send(baseMessage)
-
-        const response = await this.manager.promises.create<IPCBaseMessage>(baseMessage.nonce, { timeout })
-        if (response.error) throw new Error(response.error.message)
-
-        return response.data
+    public broadcast(message: IPCMessage): Promise<void[]> {
+        return this.manager.broadcast(message)
     }
 
     /**
-     * Broadcasts a message to the cluster.
-     * @param message IPC message.
+     * Evaluates a script on the cluster process.
+     *
+     * @param script Script string or function to evaluate.
+     * @param options Optional evaluation options including context.
+     * @returns Promise that resolves with the evaluation result.
      */
-    public async broadcast(message: IPCRawMessage): Promise<void[]> {
-        return await this.manager.broadcast(message)
+    public eval<T = any>(script: string | ((cluster: Cluster) => T), options: EvalOptions = {}): Promise<T> {
+        return eval(serializeScript(script, options.context))
     }
 
     /**
-     * Evaluates a script on the cluster.
-     * @param script Script to evaluate.
-     * @param options Evaluation options.
-     */
-    public async eval<T = any>(script: string | ((cluster: Cluster) => T), options: EvalOptions = {}): Promise<T> {
-        return eval(typeof script === 'function' ? `(${script})(this,${JSON.stringify(options.context)})` : script)
-    }
-
-    /**
-     * Evaluates a script on the shard.
-     * @param script Script to evaluate.
-     * @param options Evaluation options.
+     * Evaluates a script on the cluster's shard client.
+     *
+     * @param script Script string or function to evaluate on the shard.
+     * @param options Optional evaluation options including context and timeout.
+     * @returns Promise that resolves with the evaluation result.
      */
     public async evalOnShard<T = any>(
-        script: string | ((client: ClusterShard) => T),
+        script: string | ((client: ClusterContext) => T),
         options: EvalOptions = {}
     ): Promise<T> {
-        if (!this.thread)
-            throw new Error(`[Cluster#evalOnShard] Cluster ${this.id} does not have a child process/worker.`)
+        if (!this.cp) throw new Error(`[Cluster#evalOnShard] Cluster #${this.id} is not spawned.`)
         if (typeof script !== 'function' && typeof script !== 'string')
-            throw new TypeError('[ClusterShard#evalOnShard] Script must be a function.')
+            throw new TypeError('[Cluster#evalOnShard] "script" must be a function or a string.')
 
-        script = typeof script === 'function' ? `(${script})(this,${JSON.stringify(options.context)})` : script
-
-        const message = new IPCBaseMessage({
-            type: IPCMessageType.ClusterShardEval,
-            data: { script, options }
+        const serializedScript = serializeScript(script, options.context)
+        const message = createIPCMessage({
+            type: IPCMessageType.ClusterContextEval,
+            data: { script: serializedScript, options }
         })
 
-        await this.thread.send(message)
+        await this.cp.send(message)
 
-        const response = await this.manager.promises.create<IPCBaseMessage>(message.nonce, { timeout: options.timeout })
+        const response = await this.manager.promises.create<IPCMessage>(message.nonce, { timeout: options.timeout })
         if (response.error) throw new Error(response.error.message)
 
-        return response.data
-    }
-
-    private onThreadMessage(message: IPCRawMessage): void {
-        if (!message) return
-
-        this.handler.handleMessage(message)
-
-        if ([IPCMessageType.CustomMessage, IPCMessageType.CustomRequest].includes(message.type)) {
-            const ipcMessage = new IPCMessage(this, message)
-
-            if (message.type === IPCMessageType.CustomRequest) this.manager.emit('clientRequest', ipcMessage)
-
-            this.emit('message', ipcMessage)
-            this.manager.emit('message', ipcMessage)
-        }
-    }
-
-    private onThreadExit(code: number): void {
-        this.emit('death', this, this.thread?.process)
-        this.emit('debug', { from: 'Cluster#handleExit', data: arguments })
-
-        this.readyAt = -1
-        this.thread = null
-    }
-
-    private onThreadError(error: Error): void {
-        this.manager.emit('error', error)
+        return response.data as T
     }
 }
 
-export interface Cluster {
-    on<Event extends keyof ClusterEvents>(event: Event, listener: (...args: ClusterEvents[Event]) => void): this
-
-    once<Event extends keyof ClusterEvents>(event: Event, listener: (...args: ClusterEvents[Event]) => void): this
-
-    emit<Event extends keyof ClusterEvents>(event: Event, ...args: ClusterEvents[Event]): boolean
-
-    off<Event extends keyof ClusterEvents>(event: Event, listener: (...args: ClusterEvents[Event]) => void): this
-
-    removeAllListeners<Event extends keyof ClusterEvents>(event?: Event): this
-}
-
+/**
+ * Events emitted by the Cluster.
+ */
 export interface ClusterEvents {
+    /**
+     * Emitted when the cluster child process becomes ready.
+     */
+    ready: []
+
+    /**
+     * Emitted when the cluster receives an IPC message.
+     */
     message: [message: IPCMessage]
-    death: [cluster: Cluster, thread: ChildProcess | Worker | undefined | null]
-    spawn: [thread: ChildProcess | Worker | undefined | null]
-    ready: [cluster: Cluster]
-    debug: [message: DebugMessage]
+
+    /**
+     * Emitted when an error occurs in the cluster child process.
+     */
     error: [error: Error]
+
+    /**
+     * Emitted when the cluster child process is spawned.
+     */
+    spawn: [process: Fork]
+
+    /**
+     * Emitted when the cluster child process dies or exits.
+     */
+    death: [cluster: Cluster, process?: Fork]
 }
 
-export interface ClusterEnv<T extends ClusterManagerMode = 'thread'> {
-    LF_CLUSTER_ID: T extends 'fork' ? string : number
-    LF_CLUSTER_MANAGER_MODE: ClusterManagerMode
-    LF_SHARD_COUNT: T extends 'fork' ? string : number
-    LF_SHARDS: T extends 'fork' ? string : number[]
+/**
+ * Environment variables set for the cluster process.
+ */
+export interface ClusterEnv {
+    LETSFRAG_CLUSTER_ID: string
+    LETSFRAG_SHARD_COUNT: string
+    LETSFRAG_SHARD_LIST: string
 }
+
+export type ClusterStats = ClusterContextStats & { lastHeartbeatAt: number }
