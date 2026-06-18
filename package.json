@@ -1,6 +1,5 @@
 {
   "name": "@lacunahub/letsfrag",
-  "version": "2.1.0",
   "description": "Distributed Discord bot sharding with Redis-based orchestration",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
